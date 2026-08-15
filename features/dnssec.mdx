@@ -1,0 +1,160 @@
+---
+title: "DNSSEC with DNS-over-HTTPS"
+sidebarTitle: "DNSSEC"
+description: "DNS-over-HTTPS requests DNSSEC signatures by default and passes AD and CD flags through. Signature validation requires an external validating resolver."
+---
+
+DNS-over-HTTPS is fully compatible with DNSSEC — it requests cryptographic signatures from upstream resolvers, passes DNSSEC-related flags through unchanged, and returns signed records to the originating client. However, **signature verification is not built in to DNS-over-HTTPS itself**. Actual validation of RRSIG records against DS and DNSKEY chains must be delegated to a validating recursive resolver sitting behind `doh-server`.
+
+---
+
+## What DNS-over-HTTPS Does
+
+### Requesting DNSSEC Signatures
+
+When a DNS client sends a query with the DNSSEC OK (DO) bit set in its EDNS0 OPT record, `doh-client` forwards this flag to the upstream DoH server.
+
+For the **Google JSON protocol**, the `do=1` parameter is appended to the upstream request URL whenever the client's EDNS0 record has `DO=1` set:
+
+```go
+// doh-client/google.go
+if opt.Do() {
+    requestURL += "&do=1"
+}
+```
+
+For the **IETF wire-format protocol**, the entire DNS message — including the OPT record with the DO bit — is packed and sent as-is. If the incoming query has no OPT record at all, `doh-client` synthesises one with a 4 KiB UDP buffer and `DO=false`, ensuring a well-formed EDNS0 message is always sent upstream.
+
+On the server side (`doh-server`), the Google protocol handler always sets `DO=true` when constructing the upstream DNS query:
+
+```go
+// doh-server/google.go
+opt.SetDo(true)
+```
+
+This means that even when a plain non-DNSSEC client queries `doh-server` via the Google protocol, the server itself requests signed records from the upstream resolver. The resolver's validated status is then reflected in the `AD` flag on the response.
+
+### AD and CD Flag Pass-Through
+
+Both the `AD` (Authenticated Data) and `CD` (Checking Disabled) flags are preserved verbatim through the DNS-over-HTTPS pipeline.
+
+The `AD` flag, set by the upstream validating resolver, indicates that all RRs in the Answer and Authority sections have been authenticated under DNSSEC. It is read directly from the upstream DNS response and encoded in the JSON response:
+
+```go
+// json-dns/marshal.go
+resp.AD = msg.AuthenticatedData
+resp.CD = msg.CheckingDisabled
+```
+
+The `CD` flag is forwarded from the client to the upstream in both protocols:
+
+- **Google protocol (client → upstream):** `cd=1` is appended to the query URL when the client's DNS message has `CheckingDisabled = true`:
+
+```go
+// doh-client/google.go
+if r.CheckingDisabled {
+    requestURL += "&cd=1"
+}
+```
+
+- **Google protocol (server parsing):** the `cd` parameter is parsed and set on the outgoing DNS message:
+
+```go
+// doh-server/google.go
+cdStr := r.FormValue("cd")
+if cdStr == "1" || strings.EqualFold(cdStr, "true") {
+    cd = true
+}
+msg.CheckingDisabled = cd
+```
+
+- **IETF wire-format:** the DNS message is forwarded intact, so the CD bit is carried through naturally without any special handling.
+
+---
+
+## What DNS-over-HTTPS Does NOT Do
+
+DNS-over-HTTPS **does not validate DNSSEC signatures**. It does not verify RRSIG records, walk DS/DNSKEY chains, or check NSEC/NSEC3 authenticated denial records. The `AD` bit in a response reflects what the *upstream resolver* reported — if the upstream resolver does not validate DNSSEC, the `AD` bit will always be `false` regardless of whether the records are actually signed.
+
+---
+
+## Recommended Setup: Validating Resolver Behind doh-server
+
+To get end-to-end DNSSEC validation, configure `doh-server` to forward queries to a local validating recursive resolver such as [Unbound](https://nlnetlabs.nl/projects/unbound/) or [BIND](https://www.isc.org/bind/).
+
+### Unbound
+
+Install Unbound and configure it to validate DNSSEC using the root trust anchor:
+
+```bash
+sudo apt install unbound
+```
+
+A minimal `/etc/unbound/unbound.conf` for local-only DNSSEC validation:
+
+```yaml
+server:
+    interface: 127.0.0.1
+    port: 5335
+    do-ip4: yes
+    do-ip6: yes
+    do-udp: yes
+    do-tcp: yes
+
+    # DNSSEC validation
+    auto-trust-anchor-file: "/var/lib/unbound/root.key"
+
+    # Harden against various attacks
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    use-caps-for-id: yes
+```
+
+Then point `doh-server` at the local Unbound instance:
+
+```toml
+upstream = [
+  "udp:127.0.0.1:5335",  # Local Unbound instance
+]
+```
+
+Restart both services:
+
+```bash
+sudo systemctl restart unbound
+sudo systemctl restart doh-server
+```
+
+Queries through DNS-over-HTTPS will now be fully DNSSEC-validated by Unbound. The `AD` flag will be set to `true` on responses for signed and validated domains.
+
+### BIND
+
+BIND 9.11 and later validates DNSSEC automatically with a managed trust anchor. Configure it as a forwarding resolver listening on a non-standard port if you don't want it to replace your existing resolver:
+
+```
+options {
+    listen-on port 5335 { 127.0.0.1; };
+    recursion yes;
+    dnssec-validation auto;
+};
+```
+
+Then use `udp:127.0.0.1:5335` as the upstream in `doh-server.conf`.
+
+### Pi-hole
+
+[Pi-hole](https://pi-hole.net) can also be used as the upstream resolver for `doh-server`. Pi-hole provides DNS-level ad and tracker blocking in addition to optional DNSSEC validation. To enable DNSSEC in Pi-hole, navigate to **Settings → DNS** in the admin interface and enable the "Use DNSSEC" toggle. Pi-hole uses Unbound (or `dnsmasq`) internally, so the validation behaviour is equivalent.
+
+```toml
+upstream = [
+  "udp:127.0.0.1:53",  # Local Pi-hole instance
+]
+```
+
+---
+
+## The Checking Disabled (CD) Flag
+
+<Note>
+  The `CD` (Checking Disabled) flag is fully honoured by DNS-over-HTTPS. When a client sets `CD=1` (or `cd=1` in the Google protocol), it is signalling that it wants to perform its own DNSSEC validation and does not want the upstream resolver to return `SERVFAIL` for domains that fail validation. This is the standard mechanism for stub resolvers that implement their own DNSSEC verification stack (e.g. a security-aware stub resolver or a custom application). DNS-over-HTTPS passes this flag through to the upstream resolver unchanged, allowing the raw signed records — including those that would otherwise fail validation — to be returned to the client for local verification.
+</Note>

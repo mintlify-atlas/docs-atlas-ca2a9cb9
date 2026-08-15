@@ -1,47 +1,314 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with DNS-over-HTTPS"
+sidebarTitle: "Quickstart"
+description: "Install and run doh-client or doh-server in under five minutes. Build from source, configure upstreams, and verify encrypted DNS works."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide walks you through building both `doh-client` and `doh-server` from source, installing them as systemd services, and confirming that your system is resolving DNS over HTTPS. By the end you will have an encrypted DNS proxy listening on `127.0.0.1:53` that forwards all queries to Cloudflare's DoH resolver — with the option to point them at your own `doh-server` instead.
 
 ## Prerequisites
 
-Before you begin, you must have:
+| Requirement | Notes |
+|---|---|
+| **Go ≥ 1.20** | Newer versions are preferred. On Debian/Ubuntu, set `$GOROOT` if the default `go` binary is too old. |
+| **git** | For cloning the repository. |
+| **make** | GNU Make (pre-installed on most Linux/macOS systems). |
+| **Linux or macOS** | systemd integration is Linux-only; macOS uses launchd. |
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+<Note>
+  **Debian/Ubuntu users:** the `golang` package in older LTS releases may be below 1.20.
+  Install a current release from [go.dev/dl](https://go.dev/dl/) and export its path as
+  `GOROOT` before running `make`, for example:
+  ```bash
+  export GOROOT=/usr/local/go
+  ```
+</Note>
 
-## Get started
+## Installation
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone and build">
+    Create a Go workspace directory, then clone and compile the project:
 
     ```bash
-    npm install your-package
+    mkdir ~/gopath
+    export GOPATH=~/gopath
+
+    git clone https://github.com/m13253/dns-over-https.git
+    cd dns-over-https
+    make
     ```
+
+    `make` compiles both `doh-client/doh-client` and `doh-server/doh-server` in place using `go build -ldflags "-s -w"`. No network access is required after the initial `go mod download`.
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Install system-wide">
+    Install the binaries, default configuration files, and service units:
 
     ```bash
-    your-cli init
+    sudo make install
     ```
+
+    This places files in the following locations:
+
+    | File | Destination |
+    |---|---|
+    | `doh-client` binary | `/usr/local/bin/doh-client` |
+    | `doh-server` binary | `/usr/local/bin/doh-server` |
+    | Client config | `/etc/dns-over-https/doh-client.conf` |
+    | Server config | `/etc/dns-over-https/doh-server.conf` |
+    | Example configs | `/etc/dns-over-https/*.conf.example` |
+    | systemd units | `/etc/systemd/system/doh-client.service`, `doh-server.service` |
+
+    On **macOS**, configuration files go to `/usr/local/etc/dns-over-https/` and launchd plists are installed instead of systemd units.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Configure doh-client">
+    Open the client configuration file:
 
     ```bash
-    your-cli start
+    sudoedit /etc/dns-over-https/doh-client.conf
     ```
+
+    The default configuration already points to **Cloudflare's** RFC 8484 resolver:
+
+    ```toml
+    # /etc/dns-over-https/doh-client.conf (relevant excerpt)
+
+    listen = [
+        "127.0.0.1:53",
+        "127.0.0.1:5380",
+        "[::1]:53",
+        "[::1]:5380",
+    ]
+
+    [upstream]
+    upstream_selector = "random"
+
+    [[upstream.upstream_ietf]]
+        url = "https://cloudflare-dns.com/dns-query"
+        weight = 50
+    ```
+
+    To add Google DNS as a second upstream (for load balancing), uncomment or append:
+
+    ```toml
+    [[upstream.upstream_ietf]]
+        url = "https://dns.google/dns-query"
+        weight = 50
+    ```
+
+    To disable EDNS0-Client-Subnet for maximum privacy, set:
+
+    ```toml
+    no_ecs = true
+    ```
+
+    <Note>
+      If you are in mainland China or another region where Google DNS is blocked,
+      Cloudflare's resolver (`cloudflare-dns.com`) or Quad9 (`9.9.9.9`) are good
+      alternatives. See the example file for the full list of commented-out options.
+    </Note>
+  </Step>
+
+  <Step title="Start and enable doh-client">
+    Start the service immediately and enable it to launch at boot:
+
+    ```bash
+    sudo systemctl start doh-client.service
+    sudo systemctl enable doh-client.service
+    ```
+
+    Check that the service came up cleanly:
+
+    ```bash
+    sudo systemctl status doh-client.service
+    ```
+
+    You should see `active (running)` in the output.
+  </Step>
+
+  <Step title="Point your system DNS to 127.0.0.1">
+    `doh-client` is now listening for plain DNS on `127.0.0.1:53`. Tell your OS to use it.
+
+    <CodeGroup>
+      ```bash NetworkManager (Linux)
+      # Replace <INTERFACE> with your connection name, e.g. "Wired connection 1"
+      nmcli connection modify "<INTERFACE>" ipv4.dns "127.0.0.1" ipv4.ignore-auto-dns yes
+      nmcli connection modify "<INTERFACE>" ipv6.dns "::1"       ipv6.ignore-auto-dns yes
+      nmcli connection up "<INTERFACE>"
+      ```
+
+      ```bash /etc/resolv.conf (fallback)
+      # Edit /etc/resolv.conf directly (changes may be overwritten by NetworkManager/resolvconf)
+      sudo bash -c 'echo "nameserver 127.0.0.1" > /etc/resolv.conf'
+      ```
+
+      ```bash macOS
+      # System Preferences → Network → Advanced → DNS
+      # Or via networksetup:
+      networksetup -setdnsservers Wi-Fi 127.0.0.1
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Verify encrypted DNS">
+    Run a `dig` query and confirm it is being answered by `doh-client`:
+
+    ```bash
+    dig www.google.com
+    ```
+
+    Look for this line near the bottom of the output:
+
+    ```
+    ;; SERVER: 127.0.0.1#53(127.0.0.1)
+    ```
+
+    A successful response confirming the server address means all DNS queries from
+    your machine are now encrypted and forwarded over HTTPS. 🎉
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Running Your Own doh-server
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+If you want full control over the resolver — for privacy, performance, or split-horizon DNS — you can run `doh-server` alongside a recursive resolver such as Unbound or BIND.
+
+### Start doh-server
+
+```bash
+sudo systemctl start doh-server.service
+sudo systemctl enable doh-server.service
+```
+
+By default `doh-server` listens on `127.0.0.1:8053` and `[::1]:8053`, and forwards queries to Cloudflare and Google DNS over UDP.  Edit `/etc/dns-over-https/doh-server.conf` to change the upstream resolvers:
+
+```toml
+# /etc/dns-over-https/doh-server.conf (relevant excerpt)
+
+listen = [
+    "127.0.0.1:8053",
+    "[::1]:8053",
+]
+
+path = "/dns-query"
+
+upstream = [
+    "udp:1.1.1.1:53",
+    "udp:1.0.0.1:53",
+    "udp:8.8.8.8:53",
+    "udp:8.8.4.4:53",
+]
+
+timeout = 10
+tries   = 3
+```
+
+### Put doh-server Behind a Reverse Proxy
+
+`doh-server` speaks plain HTTP. You **must** place a TLS-terminating reverse proxy in front of it for clients to connect securely.  OCSP stapling must be enabled on the proxy.
+
+<CodeGroup>
+  ```nginx Nginx
+  server {
+    listen       443 ssl http2 default_server;
+    listen       [::]:443 ssl http2 default_server;
+    server_name  MY_SERVER_NAME;
+
+    ssl_protocols         TLSv1.2 TLSv1.3;
+    ssl_stapling          on;
+    ssl_stapling_verify   on;
+    ssl_certificate       /path/to/fullchain.pem;
+    ssl_certificate_key   /path/to/privkey.pem;
+
+    location /dns-query {
+      proxy_pass       http://localhost:8053/dns-query;
+      proxy_set_header Host      $host;
+      proxy_set_header X-Real-IP $remote_addr;
+    }
+  }
+  ```
+
+  ```caddy Caddy (v2)
+  my.server.name {
+    reverse_proxy * localhost:8053
+    tls your@email.address
+  }
+  ```
+
+  ```apacheconf Apache
+  SSLProtocol         TLSv1.2
+  SSLUseStapling      on
+  SSLStaplingCache    shmcb:/var/lib/apache2/stapling_cache(512000)
+
+  <VirtualHost *:443>
+    ServerName MY_SERVER_NAME
+    Protocols  h2 http/1.1
+    ProxyPass        /dns-query http://[::1]:8053/dns-query
+    ProxyPassReverse /dns-query http://[::1]:8053/dns-query
+  </VirtualHost>
+  ```
+</CodeGroup>
+
+### Docker (quick alternative)
+
+```bash
+docker run -d --name doh-server \
+  -p 8053:8053 \
+  -e UPSTREAM_DNS_SERVER="udp:1.1.1.1:53,udp:8.8.8.8:53" \
+  -e DOH_HTTP_PREFIX="/dns-query" \
+  -e DOH_SERVER_LISTEN=":8053" \
+  -e DOH_SERVER_TIMEOUT="10" \
+  -e DOH_SERVER_TRIES="3" \
+  -e DOH_SERVER_VERBOSE="false" \
+  m13253/dns-over-https-server:latest
+```
+
+Once the server is reachable at `https://my.server.name/dns-query`, update `doh-client.conf` to point at it:
+
+```toml
+[[upstream.upstream_ietf]]
+    url = "https://my.server.name/dns-query"
+    weight = 50
+```
+
+## Viewing Logs
+
+<Note>
+  Both `doh-client` and `doh-server` write **all log output to stderr**. When
+  running as systemd services, view logs with:
+
+  ```bash
+  # doh-client logs
+  journalctl -u doh-client.service -f
+
+  # doh-server logs
+  journalctl -u doh-server.service -f
+  ```
+
+  Verbose logging can be enabled at runtime by passing `--verbose` to either
+  binary, or by setting `verbose = true` in the respective `.conf` file.
+</Note>
+
+## Uninstalling
+
+To remove the binaries and service units (configuration files in `/etc/dns-over-https/` are preserved):
+
+```bash
+sudo make uninstall
+```
+
+Remove configuration files manually if you no longer need them:
+
+```bash
+sudo rm -rf /etc/dns-over-https/
+```
+
+<Tip>
+  This quickstart uses the default settings to get you up and running quickly.
+  For a full description of every configuration option — upstream selectors,
+  EDNS0-Client-Subnet tuning, bootstrap DNS servers, TLS client authentication,
+  and more — refer to the annotated example files installed at
+  `/etc/dns-over-https/doh-client.conf.example` and
+  `/etc/dns-over-https/doh-server.conf.example`.
 </Tip>

@@ -1,0 +1,378 @@
+---
+title: "doh-client Configuration File Reference"
+sidebarTitle: "Client Config Ref"
+description: "Complete reference for all doh-client TOML configuration options: listen addresses, upstream servers, selector, bootstrap resolvers, and advanced settings."
+---
+
+This page is a complete reference for every configuration option accepted by `doh-client`. Each option maps directly to a field in the TOML configuration file that `doh-client` reads on startup.
+
+## File Location
+
+| Platform | Default path |
+|----------|-------------|
+| Linux    | `/etc/dns-over-https/doh-client.conf` |
+| macOS    | `/usr/local/etc/dns-over-https/doh-client.conf` |
+
+To use a different file, pass the `-conf` flag when starting the daemon:
+
+```bash
+doh-client -conf /path/to/your/doh-client.conf
+```
+
+## Format
+
+The configuration file uses [TOML](https://toml.io/) syntax. Sections are declared with `[section]` headers and array-of-table entries with `[[section.key]]`.
+
+---
+
+## Top-Level Options
+
+<ParamField path="listen" type="array of strings" default='["127.0.0.1:53", "127.0.0.1:5380", "[::1]:53", "[::1]:5380"]'>
+  List of local addresses on which `doh-client` listens for incoming DNS queries. Each entry must be in `host:port` format. Both UDP and TCP are served on every listed address simultaneously.
+
+  Use `":53"` (no host) to listen on all interfaces for both IPv4 and IPv6 in a single entry — equivalent to `0.0.0.0:53` and `[::]:53`.
+
+  ```toml
+  listen = [
+      "127.0.0.1:53",
+      "127.0.0.1:5380",
+      "[::1]:53",
+      "[::1]:5380",
+  ]
+  ```
+</ParamField>
+
+---
+
+## `[upstream]` Section
+
+These options control which DoH upstream servers are used and how load balancing between them is performed.
+
+<ParamField path="upstream_selector" type="string" default='"random"'>
+  Load balancing algorithm used to select an upstream server when multiple upstreams are defined.
+
+  | Value | Description |
+  |-------|-------------|
+  | `"random"` | Pick an upstream at random on each request. `weight` is ignored. |
+  | `"weighted_round_robin"` | Nginx-style weighted round-robin. Upstreams with higher `weight` receive proportionally more requests. |
+  | `"lvs_weighted_round_robin"` | LVS-style weighted round-robin, an alternative WRR implementation. |
+
+  ```toml
+  [upstream]
+  upstream_selector = "random"
+  ```
+</ParamField>
+
+### `[[upstream.upstream_google]]`
+
+An array of upstream entries that use the **Google DNS-over-HTTPS JSON API** protocol. Add one `[[upstream.upstream_google]]` block per upstream server.
+
+<ParamField path="url" type="string" required>
+  Full HTTPS URL of the upstream DoH server that speaks the Google JSON protocol (e.g. `https://dns.google.com/resolve`).
+
+  ```toml
+  [[upstream.upstream_google]]
+      url = "https://dns.google.com/resolve"
+      weight = 50
+  ```
+</ParamField>
+
+<ParamField path="weight" type="integer (1–100)" default="50">
+  Relative weight for this upstream when `upstream_selector` is `weighted_round_robin` or `lvs_weighted_round_robin`. Higher values direct proportionally more traffic to this upstream. Ignored when the selector is `random`.
+</ParamField>
+
+### `[[upstream.upstream_ietf]]`
+
+An array of upstream entries that use the **IETF RFC 8484 wire-format** DNS-over-HTTPS protocol. Add one `[[upstream.upstream_ietf]]` block per upstream server.
+
+<ParamField path="url" type="string" required>
+  Full HTTPS URL of the upstream DoH server that speaks the RFC 8484 binary wire-format protocol (e.g. `https://cloudflare-dns.com/dns-query`).
+
+  ```toml
+  [[upstream.upstream_ietf]]
+      url = "https://cloudflare-dns.com/dns-query"
+      weight = 50
+  ```
+</ParamField>
+
+<ParamField path="weight" type="integer (1–100)" default="50">
+  Relative weight for this upstream when `upstream_selector` is `weighted_round_robin` or `lvs_weighted_round_robin`. Ignored when the selector is `random`.
+</ParamField>
+
+---
+
+## `[others]` Section
+
+Miscellaneous client behaviour settings including bootstrap resolvers, timeouts, and privacy controls.
+
+<ParamField path="bootstrap" type="array of strings" default='["8.8.8.8:53", "8.8.4.4:53"]'>
+  Traditional (plain) DNS resolvers used to resolve the hostname of DoH upstream servers during initial startup, before DoH is available. Entries must be in `host:port` format.
+
+  If multiple servers are listed, one is chosen at random for each bootstrap lookup. Set to an empty array to fall back to the system DNS configuration, or to rely on `/etc/hosts` pre-populated with the upstream IP addresses.
+
+  ```toml
+  [others]
+  bootstrap = [
+      "8.8.8.8:53",
+      "8.8.4.4:53",
+  ]
+  ```
+</ParamField>
+
+<ParamField path="passthrough" type="array of strings" default='["captive.apple.com", "connectivitycheck.gstatic.com", "detectportal.firefox.com", "globalreachtech.com", "msftconnecttest.com", "network-auth.com", "nmcheck.gnome.org", "pool.ntp.org", "time.apple.com", "time.asia.apple.com", "time.euro.apple.com", "time.nist.gov", "time.windows.com"]'>
+  Domain names (exact matches, not suffixes) that are resolved via the traditional bootstrap DNS servers instead of being forwarded over DoH. This list is evaluated only when at least one `bootstrap` server is configured.
+
+  The default set covers captive portal detection domains used by major operating systems and browsers, as well as NTP time-sync hostnames. Systems without a hardware clock need to reach NTP before they can validate TLS certificates, so these must bypass DoH.
+
+  ```toml
+  passthrough = [
+      "captive.apple.com",
+      "connectivitycheck.gstatic.com",
+      "detectportal.firefox.com",
+      "pool.ntp.org",
+      "time.nist.gov",
+  ]
+  ```
+</ParamField>
+
+<ParamField path="timeout" type="unsigned integer" default="30">
+  Maximum time in seconds that `doh-client` waits for a complete HTTP response from an upstream DoH server before treating the request as failed.
+
+  ```toml
+  timeout = 30
+  ```
+</ParamField>
+
+<ParamField path="interface" type="string" default='""'>
+  Name of the network interface to bind to for all outgoing connections to upstream DoH servers. An empty string instructs the OS to use the default route (typically `eth0` or `wlan0`).
+
+  ```toml
+  interface = ""
+  # interface = "eth1"
+  ```
+</ParamField>
+
+<ParamField path="no_cookies" type="boolean" default="true">
+  When `true`, disables the HTTP cookie jar so that no cookies are stored or sent to upstream DoH servers. This is the recommended setting for privacy.
+
+  Set to `false` if your upstream resolver is fronted by an anti-DDoS service that uses cookies to identify returning clients.
+
+  ```toml
+  no_cookies = true
+  ```
+</ParamField>
+
+<ParamField path="no_ecs" type="boolean" default="false">
+  When `true`, disables the EDNS0-Client-Subnet (ECS) extension. ECS submits a prefix of the client's IP address (`/24` for IPv4, `/56` for IPv6) to the upstream resolver, enabling GeoDNS and CDN optimisation.
+
+  Set to `true` to prevent the upstream from learning your approximate location at the cost of potentially slower CDN responses.
+
+  ```toml
+  no_ecs = false
+  ```
+</ParamField>
+
+<ParamField path="no_ipv6" type="boolean" default="false">
+  When `true`, prevents `doh-client` from using IPv6 when connecting to upstream DoH servers. Enable only if you experience connectivity issues specific to IPv6. DNS listening and bootstrap resolution are not affected by this option.
+
+  ```toml
+  no_ipv6 = false
+  ```
+</ParamField>
+
+<ParamField path="no_user_agent" type="boolean" default="false">
+  When `true`, sends an empty `User-Agent` header in HTTP requests to upstream DoH servers.
+
+  Disabling the User-Agent is generally not recommended: servers use it to identify and work around bugs in specific client versions. Behaviour differences (TLS handshake, error handling) can still be used to fingerprint the client even without a User-Agent string.
+
+  ```toml
+  no_user_agent = false
+  ```
+</ParamField>
+
+<ParamField path="verbose" type="boolean" default="false">
+  When `true`, enables detailed logging of each DNS request and the corresponding DoH response to `stderr`. Useful for troubleshooting upstream connectivity or inspecting resolved records.
+
+  ```toml
+  verbose = false
+  ```
+</ParamField>
+
+<ParamField path="insecure_tls_skip_verify" type="boolean" default="false">
+  When `true`, disables TLS certificate verification for all HTTPS connections to upstream DoH servers. The client will accept any certificate, including self-signed or expired ones.
+
+  <Warning>
+    **Never enable `insecure_tls_skip_verify` in production.** Disabling TLS verification exposes every DNS query to man-in-the-middle (MITM) attacks — an adversary on the network path can intercept and forge all responses without detection. This option exists solely for local testing and development.
+  </Warning>
+
+  ```toml
+  insecure_tls_skip_verify = false
+  ```
+</ParamField>
+
+<ParamField path="debug_http_headers" type="array of strings" default="[]">
+  List of HTTP response header names whose values should be included in debug log output. Has no effect unless `verbose = true`. Useful for inspecting cache status headers (e.g. `cf-cache-status`) or other diagnostic headers returned by upstream servers.
+
+  ```toml
+  debug_http_headers = [
+      "cf-cache-status",
+      "x-request-id",
+  ]
+  ```
+</ParamField>
+
+---
+
+## Complete Example Configuration
+
+The following is the annotated default `doh-client.conf` as shipped with the project:
+
+```toml
+# DNS listen port
+listen = [
+    "127.0.0.1:53",
+    "127.0.0.1:5380",
+    "[::1]:53",
+    "[::1]:5380",
+
+    ## To listen on both 0.0.0.0:53 and [::]:53, use the following line
+    # ":53",
+]
+
+# HTTP path for upstream resolver
+
+[upstream]
+
+# available selector: random or weighted_round_robin or lvs_weighted_round_robin
+upstream_selector = "random"
+
+# weight should in (0, 100], if upstream_selector is random, weight will be ignored
+
+## Google's resolver, good ECS, good DNSSEC
+#[[upstream.upstream_ietf]]
+#    url = "https://dns.google/dns-query"
+#    weight = 50
+
+## CloudFlare's resolver, bad ECS, good DNSSEC
+## ECS is disabled for privacy by design: https://developers.cloudflare.com/1.1.1.1/nitty-gritty-details/#edns-client-subnet
+[[upstream.upstream_ietf]]
+    url = "https://cloudflare-dns.com/dns-query"
+    weight = 50
+
+## CloudFlare's resolver, bad ECS, good DNSSEC
+## ECS is disabled for privacy by design: https://developers.cloudflare.com/1.1.1.1/nitty-gritty-details/#edns-client-subnet
+## Note that some ISPs have problems connecting to 1.1.1.1, try 1.0.0.1 if problems happen.
+#[[upstream.upstream_ietf]]
+#    url = "https://1.1.1.1/dns-query"
+#    weight = 50
+
+## DNS.SB's resolver, good ECS, good DNSSEC
+## The provider claims no logging: https://dns.sb/doh/
+#[[upstream.upstream_ietf]]
+#    url = "https://doh.dns.sb/dns-query"
+#    weight = 50
+
+## Quad9's resolver, bad ECS, good DNSSEC
+## ECS is disabled for privacy by design: https://www.quad9.net/faq/#What_is_EDNS_Client-Subnet
+#[[upstream.upstream_ietf]]
+#    url = "https://9.9.9.9/dns-query"
+#    weight = 50
+
+## CloudFlare's resolver for Tor, available only with Tor
+## Remember to disable ECS below when using Tor!
+## Blog: https://blog.cloudflare.com/welcome-hidden-resolver/
+#[[upstream.upstream_ietf]]
+#    url = "https://dns4torpnlfs2ifuz2s2yf3fc7rdmsbhm6rw75euj35pac6ap25zgqad.onion/dns-query"
+#    weight = 50
+
+
+[others]
+# Bootstrap DNS server to resolve the address of the upstream resolver
+# If multiple servers are specified, a random one will be chosen each time.
+# If empty, use the system DNS settings.
+# If you want to preload IP addresses in /etc/hosts instead of using a
+# bootstrap server, please make this list empty.
+bootstrap = [
+
+    # Google's resolver, good ECS, good DNSSEC
+    "8.8.8.8:53",
+    "8.8.4.4:53",
+
+    # CloudFlare's resolver, bad ECS, good DNSSEC
+    #"1.1.1.1:53",
+    #"1.0.0.1:53",
+
+]
+
+# The domain names here are directly passed to bootstrap servers listed above,
+# allowing captive portal detection and systems without RTC to work.
+# Only effective if at least one bootstrap server is configured.
+passthrough = [
+    "captive.apple.com",
+    "connectivitycheck.gstatic.com",
+    "detectportal.firefox.com",
+    "globalreachtech.com",
+    "msftconnecttest.com",
+    "network-auth.com",
+    "nmcheck.gnome.org",
+
+    "pool.ntp.org",
+    "time.apple.com",
+    "time.asia.apple.com",
+    "time.euro.apple.com",
+    "time.nist.gov",
+    "time.windows.com",
+]
+
+# Timeout for upstream request in seconds
+timeout = 30
+
+# Interface to bind to for outgoing connections.
+# If empty, the system default route is used (usually eth0 or wlan0).
+# Example: "eth1", "wlan0"
+interface = ""
+
+# Disable HTTP Cookies
+#
+# Cookies may be useful if your upstream resolver is protected by some
+# anti-DDoS services to identify clients.
+# Note that DNS Cookies (an DNS protocol extension to DNS) also has the ability
+# to track users and is not controlled by doh-client.
+no_cookies = true
+
+# Disable EDNS0-Client-Subnet (ECS)
+#
+# DNS-over-HTTPS supports EDNS0-Client-Subnet protocol, which submits part of
+# the client's IP address (/24 for IPv4, /56 for IPv6 by default) to the
+# upstream server. This is useful for GeoDNS and CDNs to work, and is exactly
+# the same configuration as most public DNS servers.
+no_ecs = false
+
+# Disable IPv6 when querying upstream
+#
+# Only enable this if you really have trouble connecting.
+# Doh-client uses both IPv4 and IPv6 by default and should not have problems
+# with an IPv4-only environment.
+# Note that DNS listening and bootstrapping is not controlled by this option.
+no_ipv6 = false
+
+# Disable submitting User-Agent
+#
+# It is generally not recommended to disable submitting User-Agent because it
+# is still possible to probe client version according to behavior differences,
+# such as TLS handshaking, handling of malformed packets, and specific bugs.
+# Additionally, User-Agent is an important way for the server to distinguish
+# buggy, old, or insecure clients, and to workaround specific bugs.
+# (e.g. doh-server can detect and workaround certain issues of DNSCrypt-Proxy
+# and older Firefox.)
+no_user_agent = false
+
+# Enable logging
+verbose = false
+
+# insecure_tls_skip_verification will disable necessary TLS security verification.
+# This option is designed for testing or development purposes,
+# turning on this option on public Internet may cause your connection
+# vulnerable to MITM attack.
+insecure_tls_skip_verify = false
+```

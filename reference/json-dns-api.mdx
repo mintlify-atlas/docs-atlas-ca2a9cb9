@@ -1,0 +1,288 @@
+---
+title: "Google DNS-over-HTTPS JSON API Reference"
+sidebarTitle: "JSON DNS API"
+description: "Reference for the Google DNS-over-HTTPS JSON protocol endpoint. Query parameters, response schema, record types, and ECS support documented with examples."
+---
+
+The Google DNS-over-HTTPS JSON API accepts standard DNS queries via HTTP GET and returns human-readable JSON responses. This endpoint is compatible with the [Google DNS-over-HTTPS protocol](https://developers.google.com/speed/public-dns/docs/dns-over-https), with one notable difference: this implementation uses an absolute `Expires` timestamp on each record rather than a relative TTL value.
+
+## Endpoint
+
+```
+GET /dns-query
+```
+
+The path is configurable via the server's `path` setting. The default is `/dns-query`.
+
+## Request Parameters
+
+<ParamField query="name" type="string" required>
+  The fully-qualified domain name (FQDN) to query. Case-insensitive. A trailing dot is not required — the server will normalize the name automatically. International domain names (IDN) are accepted and converted to Punycode (ASCII-compatible encoding) before lookup.
+
+  Example: `example.com`
+</ParamField>
+
+<ParamField query="type" type="string | integer" required>
+  The DNS record type to query. Accepts either the standard mnemonic name (case-insensitive) or the numeric RR type value as a decimal integer. If omitted, defaults to `A` (type `1`).
+
+  Common values: `A` (1), `AAAA` (28), `MX` (15), `TXT` (16), `CNAME` (5), `NS` (2), `SOA` (6), `PTR` (12), `SRV` (33), `CAA` (257), `ANY` (255).
+
+  Example: `A` or `1`
+</ParamField>
+
+<ParamField query="ct" type="string" optional>
+  Content-type hint that controls the response format. Use `application/dns-json` to request a JSON response. If omitted, the server infers the format from the `Accept` header or from the presence of the `name` parameter.
+
+  Accepted values: `application/dns-json`, `application/json`
+</ParamField>
+
+<ParamField query="cd" type="boolean" optional>
+  Disable DNSSEC validation. Set `cd=1` or `cd=true` to set the CheckingDisabled (CD) flag in the DNS query, instructing the upstream resolver to return records without performing DNSSEC validation. Defaults to `false`.
+
+  Accepted truthy values: `1`, `true`  
+  Accepted falsy values: `0`, `false`, or omit the parameter
+</ParamField>
+
+<ParamField query="do" type="boolean" optional>
+  Request DNSSEC records. Set `do=1` to set the DNSSEC OK (DO) flag in the EDNS0 OPT record, signalling that the client wants DNSSEC resource records (e.g. RRSIG, DNSKEY) included in the response. The server always sets this flag internally regardless of what the client requests.
+</ParamField>
+
+<ParamField query="edns_client_subnet" type="string" optional>
+  Override the EDNS0 Client Subnet (ECS) value sent to the upstream resolver. Provide a CIDR-notation subnet (e.g. `203.0.113.0/24`). If omitted, the server automatically derives the ECS value from the client's IP address (`/24` prefix for IPv4, `/56` prefix for IPv6). Pass `0.0.0.0/0` (or the shorthand `0/0`) to disable ECS for this query.
+
+  Format: `<IP address>/<prefix length>`  
+  Example: `203.0.113.0/24`
+</ParamField>
+
+## Request Headers
+
+| Header | Value | Notes |
+|--------|-------|-------|
+| `Accept` | `application/dns-json` | Preferred; signals JSON response |
+| `Accept` | `application/json` | Also accepted for JSON response |
+
+The server uses the `Accept` header together with the `ct` query parameter and the presence of `name` to determine the desired response format. The `Accept` header takes precedence.
+
+## Example Requests
+
+```bash
+# Query A record for example.com
+curl -H 'Accept: application/dns-json' \
+  'https://your-server/dns-query?name=example.com&type=A'
+
+# Query with DNSSEC records requested
+curl -H 'Accept: application/dns-json' \
+  'https://your-server/dns-query?name=example.com&type=A&do=1'
+
+# Query with DNSSEC validation disabled
+curl -H 'Accept: application/dns-json' \
+  'https://your-server/dns-query?name=example.com&type=A&cd=1'
+
+# Query with explicit ECS subnet override
+curl -H 'Accept: application/dns-json' \
+  'https://your-server/dns-query?name=example.com&type=A&edns_client_subnet=203.0.113.0/24'
+
+# Query MX records by name
+curl -H 'Accept: application/dns-json' \
+  'https://your-server/dns-query?name=example.com&type=MX'
+
+# Query MX records by number
+curl -H 'Accept: application/dns-json' \
+  'https://your-server/dns-query?name=example.com&type=15'
+```
+
+## Response Schema
+
+The response body is a JSON object with the following fields.
+
+### Top-Level Fields
+
+<ResponseField name="Status" type="integer" required>
+  The standard DNS response code (RCODE) as a 32-bit integer. Common values:
+
+  | Code | Name | Meaning |
+  |------|------|---------|
+  | `0` | NOERROR | Successful response |
+  | `1` | FORMERR | Format error in query |
+  | `2` | SERVFAIL | Server failure |
+  | `3` | NXDOMAIN | Name does not exist |
+  | `4` | NOTIMP | Query type not implemented |
+  | `5` | REFUSED | Query refused |
+
+  Extended RCODE bits from the EDNS0 OPT record are merged into the upper bits of this field.
+</ResponseField>
+
+<ResponseField name="TC" type="boolean" required>
+  Whether the response was truncated. When `true`, the response exceeded the maximum allowed size and was cut short. Clients should retry over TCP (or use the IETF wire-format endpoint instead).
+</ResponseField>
+
+<ResponseField name="RD" type="boolean" required>
+  Recursion Desired. Reflects the RD flag from the original query — indicates that the client requested recursive resolution.
+</ResponseField>
+
+<ResponseField name="RA" type="boolean" required>
+  Recursion Available. When `true`, the upstream server supports recursive queries.
+</ResponseField>
+
+<ResponseField name="AD" type="boolean" required>
+  Authenticated Data (DNSSEC). When `true`, the upstream resolver has validated all records in the response using DNSSEC. Note that DNSSEC validation is performed by the upstream recursive resolver, not by this server.
+</ResponseField>
+
+<ResponseField name="CD" type="boolean" required>
+  Checking Disabled (DNSSEC). Reflects the CD flag from the query. When `true`, DNSSEC validation was disabled at the client's request.
+</ResponseField>
+
+<ResponseField name="Question" type="array" required>
+  List of questions that were asked. Usually contains a single entry mirroring the `name` and `type` parameters. See [Question Object](#question-object) below.
+</ResponseField>
+
+<ResponseField name="Answer" type="array">
+  List of DNS answer records. Omitted when empty. Each element follows the [RR Object](#rr-resource-record-object) schema.
+</ResponseField>
+
+<ResponseField name="Authority" type="array">
+  List of DNS authority (NS) records. Omitted when empty. Present on NXDOMAIN responses and delegations. Each element follows the [RR Object](#rr-resource-record-object) schema.
+</ResponseField>
+
+<ResponseField name="Additional" type="array">
+  List of additional records. Omitted when empty. OPT records (EDNS0) are consumed internally and do not appear here. Each element follows the [RR Object](#rr-resource-record-object) schema.
+</ResponseField>
+
+<ResponseField name="Comment" type="string">
+  Optional human-readable error or status message. Present when the server encountered a problem, such as an invalid parameter or an upstream query failure.
+</ResponseField>
+
+<ResponseField name="edns_client_subnet" type="string">
+  The ECS value echoed back from the upstream DNS response, in `<IP>/<scope-prefix-length>` format. Only present when the upstream resolver returns an EDNS0 Client Subnet option. The scope prefix length reflects how many bits of the submitted subnet the upstream actually used for its answer.
+
+  Example: `203.0.113.0/24`
+</ResponseField>
+
+### RR (Resource Record) Object
+
+Each element in `Answer`, `Authority`, and `Additional` is an RR object:
+
+<ResponseField name="name" type="string">
+  The owner name of the record as a fully-qualified domain name with a trailing dot.
+
+  Example: `"example.com."`
+</ResponseField>
+
+<ResponseField name="type" type="integer">
+  The numeric DNS record type. For example, `1` for A, `28` for AAAA, `15` for MX.
+</ResponseField>
+
+<ResponseField name="TTL" type="integer">
+  The record's time-to-live in seconds at the moment the response was generated.
+</ResponseField>
+
+<ResponseField name="Expires" type="string">
+  The absolute expiry time of the record, formatted as an RFC 1123 timestamp (e.g. `"Mon, 01 Jan 2024 12:00:00 UTC"`). This differs from Google's original implementation, which uses a relative TTL only. Clients that understand absolute expiry times should prefer `Expires` over `TTL` for cache management.
+</ResponseField>
+
+<ResponseField name="data" type="string">
+  The record data in zone-file presentation format. The exact syntax depends on the record type:
+
+  | Type | Example `data` value |
+  |------|---------------------|
+  | A | `"93.184.216.34"` |
+  | AAAA | `"2606:2800:220:1:248:1893:25c8:1946"` |
+  | MX | `"10 mail.example.com."` |
+  | TXT | `"\"v=spf1 include:_spf.example.com ~all\""` |
+  | CNAME | `"www.example.com."` |
+  | NS | `"ns1.example.com."` |
+</ResponseField>
+
+### Question Object
+
+<ResponseField name="name" type="string">
+  The queried domain name as a fully-qualified domain name with a trailing dot.
+
+  Example: `"example.com."`
+</ResponseField>
+
+<ResponseField name="type" type="integer">
+  The numeric DNS query type. For example, `1` for A.
+</ResponseField>
+
+## HTTP Response Codes
+
+| HTTP Status | Meaning |
+|-------------|---------|
+| `200 OK` | Successful DNS response (including NXDOMAIN — DNS errors are reported in the `Status` field, not the HTTP status code) |
+| `400 Bad Request` | Invalid or missing query parameters |
+| `415 Unsupported Media Type` | Unrecognised `ct` value |
+| `500 Internal Server Error` | DNS packet serialisation failure |
+| `503 Service Unavailable` | Upstream returned SERVFAIL (`Status: 2`) |
+
+## Example Response
+
+```json
+{
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": false,
+  "CD": false,
+  "Question": [
+    {
+      "name": "example.com.",
+      "type": 1
+    }
+  ],
+  "Answer": [
+    {
+      "name": "example.com.",
+      "type": 1,
+      "TTL": 3600,
+      "Expires": "Mon, 01 Jan 2024 12:00:00 UTC",
+      "data": "93.184.216.34"
+    }
+  ]
+}
+```
+
+An NXDOMAIN response (name not found) looks like:
+
+```json
+{
+  "Status": 3,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": false,
+  "CD": false,
+  "Question": [
+    {
+      "name": "nonexistent.example.com.",
+      "type": 1
+    }
+  ],
+  "Authority": [
+    {
+      "name": "example.com.",
+      "type": 6,
+      "TTL": 900,
+      "Expires": "Mon, 01 Jan 2024 12:15:00 UTC",
+      "data": "ns1.example.com. hostmaster.example.com. 2024010101 3600 900 604800 300"
+    }
+  ]
+}
+```
+
+## Differences from Google's Implementation
+
+This server's JSON API is compatible with the [Google DNS-over-HTTPS protocol](https://developers.google.com/speed/public-dns/docs/dns-over-https) with one intentional difference:
+
+- **Absolute `Expires` time** — Each RR object carries an `Expires` field containing an absolute RFC 1123 timestamp, computed as `now + TTL` at response generation time. Google's API only provides the relative `TTL` field. Both fields are always present; clients that understand absolute expiry times should prefer `Expires` for more accurate cache management.
+
+Response headers also reflect caching information:
+
+- `Cache-Control: public, max-age=<min-ttl>` when the query was not tailored to the client (no per-client ECS)
+- `Cache-Control: private, max-age=<min-ttl>` when the response was tailored (ECS derived from the client IP)
+- `Expires`: set to the absolute expiry time of the record with the lowest TTL
+
+<Note>
+  Queries for non-INET (Internet) DNS classes are not supported. The server only handles standard `IN`-class queries. Any request for a different class will receive a `REFUSED` response from the upstream resolver.
+</Note>

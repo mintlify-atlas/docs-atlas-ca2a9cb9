@@ -1,0 +1,79 @@
+---
+title: "DNS-over-HTTPS: High-Performance Encrypted DNS"
+sidebarTitle: "Introduction"
+description: "DNS-over-HTTPS encrypts DNS queries over HTTPS using Google JSON and IETF RFC 8484. Deploy a client proxy or your own DoH server."
+---
+
+DNS-over-HTTPS (DoH) protects your DNS queries from eavesdropping and tampering by tunneling them inside encrypted HTTPS connections. The **m13253/dns-over-https** project provides two complementary binaries: **doh-client**, a local DNS proxy that intercepts ordinary DNS traffic and forwards it encrypted to a DoH resolver, and **doh-server**, a full DoH server you can self-host behind your own HTTPS reverse proxy. Together they let you run the complete DoH stack — from your application to your own recursive resolver — without relying on any third-party infrastructure.
+
+## Architecture Overview
+
+A typical deployment routes DNS traffic through several layers, allowing caching and CDN acceleration between the client and server:
+
+```
+Application
+    │  (plain DNS on 127.0.0.1:53)
+    ▼
+doh-client          ← local DNS proxy
+    │  (HTTPS / HTTP2)
+    ▼
+HTTP Cache / CDN    ← optional, accelerates repeated lookups
+    │  (HTTP)
+    ▼
+doh-server          ← your DoH server (behind Nginx / Caddy / Apache)
+    │  (UDP or TCP)
+    ▼
+Upstream DNS        ← recursive resolver (Unbound, BIND, public resolvers…)
+```
+
+Although `doh-client` can talk directly to a public DoH resolver without running your own `doh-server`, placing an HTTP service muxer (e.g. Nginx, Caddy) in front of `doh-server` lets you share a single TLS endpoint with other HTTPS services and enables OCSP stapling — which is required to prevent DNS bootstrapping loops.
+
+<Note>
+  HTTP/2 with at least TLS 1.3 is strongly recommended for the client-to-server
+  leg. OCSP stapling **must** be enabled on your reverse proxy; without it,
+  `doh-client` may trigger recursive DNS lookups when trying to validate the
+  server's certificate.
+</Note>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Dual Protocol Support" icon="globe">
+    Speaks both the **Google DNS-over-HTTPS JSON** protocol and the **IETF RFC 8484** wire-format standard, making it compatible with every major public DoH resolver.
+  </Card>
+  <Card title="HTTP/2 Transport" icon="bolt">
+    All upstream queries are multiplexed over persistent HTTP/2 connections, dramatically reducing per-query latency compared to legacy DNS-over-TCP.
+  </Card>
+  <Card title="Upstream Load Balancing" icon="shuffle">
+    Configure multiple upstream resolvers and choose between `random`, `weighted_round_robin`, or `lvs_weighted_round_robin` selection strategies.
+  </Card>
+  <Card title="EDNS0-Client-Subnet (GeoDNS)" icon="location-dot">
+    Forwards a /24 IPv4 or /56 IPv6 subnet prefix to upstreams so that GeoDNS and CDN edge selection continue to work. Can be disabled for maximum privacy with `no_ecs = true`.
+  </Card>
+  <Card title="DNSSEC Pass-Through" icon="shield-check">
+    Requests DNSSEC signatures from upstreams by default. Pair with a validating resolver such as Unbound or BIND for full signature verification.
+  </Card>
+  <Card title="systemd & Docker Integration" icon="server">
+    Ships ready-made systemd unit files and NetworkManager configuration on Linux, launchd plists on macOS, and an official Docker image for containerised deployments.
+  </Card>
+</CardGroup>
+
+## Protocol Support
+
+### Google DNS-over-HTTPS JSON Protocol
+
+The Google DNS-over-HTTPS protocol expresses DNS queries and responses as JSON objects carried over HTTPS GET requests. Query parameters encode the hostname and record type; the server responds with a JSON body containing the answer, TTL, RCODE, and optional DNSSEC data. This project follows the Google protocol closely, with one intentional difference: **absolute expiry timestamps** are preferred over relative TTL values, which allows HTTP caches to honour the `Expires` header correctly.
+
+### IETF RFC 8484
+
+[RFC 8484](https://www.rfc-editor.org/rfc/rfc8484.txt) is the IETF standard for DNS-over-HTTPS. It encodes DNS messages in the standard binary wire format and carries them in HTTPS POST (or GET with base64url encoding) requests using the `application/dns-message` content type. RFC 8484 is supported by all modern browsers, operating systems, and public resolvers. `doh-client` automatically negotiates the right protocol for each configured upstream.
+
+<Note>
+  Both protocols are fully interoperable with all major public DoH providers
+  including Cloudflare (1.1.1.1), Google (8.8.8.8), Quad9 (9.9.9.9), and
+  DNS.SB.
+</Note>
+
+## Licensing
+
+DNS-over-HTTPS is released under the **MIT License**. You are free to embed it in your own projects — open source or proprietary — as long as the original copyright notice is retained. Contributions that improve the project and are shared back with the community are warmly welcomed.

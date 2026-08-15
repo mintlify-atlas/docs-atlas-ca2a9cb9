@@ -1,0 +1,124 @@
+---
+title: "Build DNS-over-HTTPS from Source"
+sidebarTitle: "From Source"
+description: "Build doh-client and doh-server from Go source on Linux or macOS using Make. Covers prerequisites, GOROOT, and uninstallation."
+---
+
+Building DNS-over-HTTPS from source gives you the latest binaries for both `doh-client` and `doh-server` directly from the project repository. This approach works on Linux and macOS and uses a standard `make`-based workflow.
+
+## Prerequisites
+
+Before building, make sure you have the following installed:
+
+- **[Go](https://golang.org) >= 1.20** — the newer the version, the better
+- **git** — to clone the repository
+- **make** — to run the build and install targets
+
+<Warning>
+  **Debian/Ubuntu users:** The Go version provided by the system package manager may be too old. If the Makefile cannot automatically select the correct Go binary, you must set the `$GOROOT` environment variable to point to your newer Go installation before running `make`. For example:
+
+  ```bash
+  export GOROOT=/usr/local/go
+  ```
+</Warning>
+
+## Build steps
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the DNS-over-HTTPS repository from GitHub:
+
+    ```bash
+    git clone https://github.com/m13253/dns-over-https.git
+    cd dns-over-https
+    ```
+  </Step>
+
+  <Step title="Set up GOPATH">
+    Create an empty directory to use as your Go workspace and export it as `$GOPATH`:
+
+    ```bash
+    mkdir ~/gopath
+    export GOPATH=~/gopath
+    ```
+  </Step>
+
+  <Step title="Build the binaries">
+    Run `make` to compile both `doh-client` and `doh-server`:
+
+    ```bash
+    make
+    ```
+
+    This produces the compiled binaries at `doh-client/doh-client` and `doh-server/doh-server` inside the repository directory.
+  </Step>
+
+  <Step title="Install system-wide">
+    Run the install target with `sudo` to install the binaries, configuration files, and service units:
+
+    ```bash
+    sudo make install
+    ```
+
+    This installs everything to the system prefix (`/usr/local` by default) and sets up service management files appropriate for your operating system.
+  </Step>
+</Steps>
+
+## What gets installed
+
+After running `sudo make install`, the following files are placed on your system:
+
+**Binaries** (installed to `/usr/local/bin/`):
+- `/usr/local/bin/doh-client`
+- `/usr/local/bin/doh-server`
+
+**Configuration files** (installed to `/etc/dns-over-https/`):
+- `/etc/dns-over-https/doh-client.conf` — active client configuration
+- `/etc/dns-over-https/doh-server.conf` — active server configuration
+- `/etc/dns-over-https/doh-client.conf.example` — reference copy of the default client config
+- `/etc/dns-over-https/doh-server.conf.example` — reference copy of the default server config
+
+**Systemd service units** (Linux only):
+- `doh-client.service`
+- `doh-server.service`
+
+These unit files are installed into the system's systemd unit directory so that both services can be managed with `systemctl`.
+
+## macOS differences
+
+On macOS, the install target automatically adapts to the platform:
+
+- Configuration files are placed in `/usr/local/etc/dns-over-https/` instead of `/etc/dns-over-https/`
+- **launchd property list files** (`.plist`) are installed instead of systemd unit files, enabling service management through `launchctl`
+- A Darwin-specific wrapper binary is also built and installed
+
+## Uninstalling
+
+To remove the installed binaries and service files, run:
+
+```bash
+sudo make uninstall
+```
+
+<Note>
+  The uninstall target removes the binaries and service units, but **configuration files are intentionally preserved** at `/etc/dns-over-https/` (or `/usr/local/etc/dns-over-https/` on macOS). If you want to remove them completely, delete the directory manually:
+
+  ```bash
+  sudo rm -rf /etc/dns-over-https
+  ```
+</Note>
+
+## Verifying the build
+
+After installing, confirm both binaries are available and check their version:
+
+```bash
+doh-client -version
+doh-server -version
+```
+
+If the commands are not found, make sure `/usr/local/bin` is in your `$PATH`:
+
+```bash
+export PATH=$PATH:/usr/local/bin
+```

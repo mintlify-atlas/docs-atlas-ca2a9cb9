@@ -1,0 +1,106 @@
+---
+title: "doh-client Command-Line Reference"
+sidebarTitle: "doh-client"
+description: "Complete CLI reference for doh-client: flags for config file path, verbose logging, version output, and PID file management on Linux/BSD."
+---
+
+`doh-client` is the DNS proxy daemon that accepts standard DNS queries over UDP and TCP and forwards them to a DNS-over-HTTPS upstream over HTTP/2. It acts as a local resolver bridge, allowing existing DNS clients to benefit from DoH without any changes on their end.
+
+## Synopsis
+
+```
+doh-client [-conf <path>] [-verbose] [-version] [-pid-file <path>]
+```
+
+## Flags
+
+<ParamField query="-conf" type="string" default="doh-client.conf">
+  Path to the configuration file. When a relative path is given, it is resolved
+  against the current working directory at process startup.
+</ParamField>
+
+<ParamField query="-verbose" type="bool" default="false">
+  Enable verbose logging to stderr. When set, this flag overrides the `verbose`
+  setting in the configuration file, forcing verbose mode on regardless of the
+  file's value.
+</ParamField>
+
+<ParamField query="-version" type="bool" default="false">
+  Print the version string (currently `2.3.10`) and the project homepage URL,
+  then exit immediately with code 0.
+
+  ```
+  doh-client 2.3.10
+  Homepage: https://github.com/m13253/dns-over-https
+  ```
+</ParamField>
+
+<ParamField query="-pid-file" type="string">
+  *(Linux/BSD only)* Path to a PID file. When specified, `doh-client` writes its
+  process ID to this file before starting. If the file already exists and the
+  recorded PID corresponds to a running process, the new instance logs a message
+  and exits instead of starting a second daemon. If the existing PID is no longer
+  running, the stale file is removed and the new instance proceeds normally.
+
+  See the [note below](#pid-file-platform-availability) regarding platform
+  availability.
+</ParamField>
+
+## Usage Examples
+
+**Start with the default configuration file** (looks for `doh-client.conf` in the current directory):
+
+```bash
+doh-client
+```
+
+**Start with an explicit configuration file path:**
+
+```bash
+doh-client -conf /etc/dns-over-https/doh-client.conf
+```
+
+**Enable verbose logging at runtime** (overrides config-file setting):
+
+```bash
+doh-client -conf /etc/dns-over-https/doh-client.conf -verbose
+```
+
+**Print version information and exit:**
+
+```bash
+doh-client -version
+```
+
+## Signal Handling and Process Lifecycle
+
+`doh-client` is designed to run as a long-lived daemon. It listens on the
+addresses configured in `doh-client.conf` over both UDP and TCP, forwarding
+incoming DNS queries to the configured DoH upstreams via HTTP/2.
+
+The process does not daemonize itself (i.e., it does not fork to the background).
+Use your platform's service manager to handle daemonization, restart-on-failure,
+and log capture:
+
+- **systemd** (Linux): create a `.service` unit with `Type=simple` and
+  `ExecStart=/usr/local/bin/doh-client -conf /etc/dns-over-https/doh-client.conf`.
+- **launchd** (macOS): create a `.plist` in `/Library/LaunchDaemons/` with the
+  `ProgramArguments` key pointing to the binary and config file.
+- **rc.d / runit / s6**: use the binary directly as the supervised process.
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Clean exit — either `-version` was passed, or a running PID was detected in the PID file and the process chose not to start a duplicate. |
+| `1`  | Fatal error — the configuration file could not be loaded, the client could not be initialised (e.g., invalid upstream URL, network bind failure), or the PID file could not be read/written. |
+
+## PID File Platform Availability
+
+<Note>
+  The `-pid-file` flag is compiled in and available **only** on the following
+  operating systems: Linux, FreeBSD, OpenBSD, NetBSD, and DragonFlyBSD. On
+  macOS, Windows, and other platforms the flag is silently absent from the help
+  output and will produce an error if supplied. Use cgroup-based process tracking
+  or your service manager's built-in supervision instead.
+</Note>

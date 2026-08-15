@@ -1,0 +1,156 @@
+---
+title: "Run DNS-over-HTTPS as a Systemd Service"
+sidebarTitle: "Systemd"
+description: "Configure doh-client and doh-server as systemd services on Linux. Covers enabling, starting, stopping, logs, and NetworkManager integration."
+---
+
+DNS-over-HTTPS ships with systemd service unit files for both `doh-client` and `doh-server`. Once installed, you can manage either component as a standard system service — with automatic startup at boot, log integration via `journald`, and automatic restart on failure.
+
+## Prerequisites
+
+The systemd unit files are installed as part of `sudo make install`. Make sure you have completed the [build and install steps](/installation/from-source) before proceeding.
+
+## Managing doh-client
+
+<Steps>
+  <Step title="Enable the service">
+    Configure `doh-client` to start automatically at boot:
+
+    ```bash
+    sudo systemctl enable doh-client.service
+    ```
+  </Step>
+
+  <Step title="Start the service">
+    Start `doh-client` immediately:
+
+    ```bash
+    sudo systemctl start doh-client.service
+    ```
+  </Step>
+
+  <Step title="Check service status">
+    Verify the service is running and inspect recent log output:
+
+    ```bash
+    sudo systemctl status doh-client.service
+    ```
+  </Step>
+
+  <Step title="View live logs">
+    Follow the `doh-client` log stream in real time:
+
+    ```bash
+    journalctl -u doh-client -f
+    ```
+  </Step>
+</Steps>
+
+To stop or disable the service:
+
+```bash
+sudo systemctl stop doh-client.service
+sudo systemctl disable doh-client.service
+```
+
+## Managing doh-server
+
+<Steps>
+  <Step title="Enable the service">
+    Configure `doh-server` to start automatically at boot:
+
+    ```bash
+    sudo systemctl enable doh-server.service
+    ```
+  </Step>
+
+  <Step title="Start the service">
+    Start `doh-server` immediately:
+
+    ```bash
+    sudo systemctl start doh-server.service
+    ```
+  </Step>
+
+  <Step title="Check service status">
+    Verify the service is running and inspect recent log output:
+
+    ```bash
+    sudo systemctl status doh-server.service
+    ```
+  </Step>
+
+  <Step title="View live logs">
+    Follow the `doh-server` log stream in real time:
+
+    ```bash
+    journalctl -u doh-server -f
+    ```
+  </Step>
+</Steps>
+
+To stop or disable the service:
+
+```bash
+sudo systemctl stop doh-server.service
+sudo systemctl disable doh-server.service
+```
+
+## Service file details
+
+Both `doh-client.service` and `doh-server.service` are configured with several hardening and performance settings:
+
+| Directive | Value | Effect |
+|-----------|-------|--------|
+| `DynamicUser=yes` | `yes` | Runs the process as an automatically created, ephemeral unprivileged user. No system user account needs to be created manually. |
+| `AmbientCapabilities` | `CAP_NET_BIND_SERVICE` | Grants the process permission to bind to privileged ports (such as port 53) without running as root. |
+| `Restart` | `always` | The service is automatically restarted if it exits for any reason. |
+| `RestartSec` | `1s` | Initial wait before the first restart attempt. |
+| `RestartMaxDelaySec` | `76s` | Maximum wait between restart attempts (exponential backoff cap). |
+| `RestartSteps` | `9` | Number of backoff steps between `RestartSec` and `RestartMaxDelaySec`. |
+| `LimitNOFILE` | `1048576` | Raises the open file descriptor limit to 1,048,576 for high-concurrency performance. |
+
+The exponential backoff means that if the service crashes repeatedly, systemd will wait progressively longer between restarts — starting at 1 second and increasing up to 76 seconds — preventing excessive resource consumption in a crash loop.
+
+## NetworkManager integration
+
+On Linux, `sudo make install` also installs NetworkManager dispatcher scripts into `/etc/NetworkManager/dispatcher.d/`. These scripts allow NetworkManager to automatically manage the DNS configuration when network interfaces come up or go down, coordinating with `doh-client` to route DNS queries correctly as network state changes.
+
+## Updating system DNS to use doh-client
+
+Once `doh-client` is running and listening on `127.0.0.1:53`, configure your system to use it as the DNS resolver.
+
+**Using the NetworkManager GUI:**
+
+Open *Settings → Network*, select your connection, go to the *IPv4* or *IPv6* tab, and set the DNS server to `127.0.0.1`.
+
+**Using `nmcli`:**
+
+```bash
+# Replace "Wired connection 1" with your actual connection name
+nmcli connection modify "Wired connection 1" ipv4.dns "127.0.0.1"
+nmcli connection modify "Wired connection 1" ipv4.ignore-auto-dns yes
+nmcli connection up "Wired connection 1"
+```
+
+To verify that DNS queries are going through `doh-client`, run:
+
+```bash
+dig www.google.com
+```
+
+The output should show:
+
+```
+;; SERVER: 127.0.0.1#53(127.0.0.1)
+```
+
+## Circular dependency and OCSP stapling
+
+<Warning>
+  **Important:** If `doh-client` is broken or not yet started, HTTPS certificate verification for the upstream DoH server may fail because certificate revocation checks (OCSP) themselves require DNS resolution — creating a circular dependency.
+
+  To avoid this, **OCSP stapling must be enabled on your upstream HTTPS server**. With OCSP stapling, the server includes the certificate status in the TLS handshake, so the client does not need to perform a separate DNS lookup to reach an OCSP responder. Without it, a failed DNS client can prevent the DNS client from ever starting successfully.
+
+  See the [server configuration examples](/installation/from-source) for how to enable OCSP stapling in Apache, Nginx, and Caddy.
+</Warning>

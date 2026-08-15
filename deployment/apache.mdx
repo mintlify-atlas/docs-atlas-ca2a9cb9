@@ -1,0 +1,95 @@
+---
+title: "Deploy DNS-over-HTTPS Behind Apache"
+sidebarTitle: "Apache"
+description: "Configure Apache as a reverse proxy for doh-server with TLS, HTTP/2, OCSP stapling, and proxy pass to the local DoH server port."
+---
+
+Apache HTTP Server can serve as a robust TLS-terminating reverse proxy for `doh-server`, providing HTTP/2 multiplexing, OCSP stapling, and flexible request routing. This guide covers a minimal but production-ready Apache VirtualHost configuration that proxies DoH traffic to a locally running `doh-server` instance.
+
+## Prerequisites
+
+- `doh-server` installed and listening on `[::1]:8053` (IPv6 loopback) and/or `127.0.0.1:8053`.
+- Apache HTTP Server with the following modules enabled:
+  - `mod_ssl` — TLS support
+  - `mod_proxy` and `mod_proxy_http` — reverse proxy support
+  - `mod_http2` — HTTP/2 support
+- A valid TLS certificate and private key.
+- An OCSP stapling cache configured (required; see below).
+
+Enable the required modules on Debian/Ubuntu:
+
+```bash
+sudo a2enmod ssl proxy proxy_http http2
+sudo systemctl restart apache2
+```
+
+On RHEL/CentOS/Fedora, these modules are typically compiled in or available via the `mod_http2` package.
+
+## Apache VirtualHost Configuration
+
+Add the following to your Apache configuration, either in a dedicated file under `/etc/apache2/sites-available/` (Debian/Ubuntu) or `/etc/httpd/conf.d/` (RHEL-based):
+
+```apache
+SSLProtocol TLSv1.2
+SSLHonorCipherOrder On
+SSLCipherSuite ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:ECDH+3DES:DH+3DES:RSA+3DES:!aNULL:!MD5:!DSS:!eNULL:!EXP:!LOW:!MD5
+SSLUseStapling on
+SSLStaplingCache shmcb:/var/lib/apache2/stapling_cache(512000)
+
+<VirtualHost *:443>
+    ServerName MY_SERVER_NAME
+    Protocols h2 http/1.1
+    ProxyPass /dns-query http://[::1]:8053/dns-query
+    ProxyPassReverse /dns-query http://[::1]:8053/dns-query
+</VirtualHost>
+```
+
+<Note>
+  Replace `MY_SERVER_NAME` with your actual domain name (e.g. `doh.example.com`). You will also need to add `SSLCertificateFile` and `SSLCertificateKeyFile` directives inside the `<VirtualHost>` block pointing to your certificate and private key. On RHEL-based systems, the stapling cache path may differ — adjust `/var/lib/apache2/stapling_cache` to a path writable by the Apache process, such as `/var/cache/httpd/ssl_stapling_cache`.
+</Note>
+
+## Key Directives Explained
+
+### `Protocols h2 http/1.1`
+
+Enables HTTP/2 for the virtual host. The `mod_http2` module must be loaded. HTTP/2 multiplexing is especially valuable for DNS-over-HTTPS because many short-lived DNS queries can be pipelined over a single connection. `http/1.1` is kept as a fallback for clients that do not support HTTP/2.
+
+### `ProxyPass /dns-query http://[::1]:8053/dns-query`
+
+Forwards any request arriving at `/dns-query` to the locally running `doh-server` on the IPv6 loopback address. `doh-server` by default listens on both `127.0.0.1:8053` (IPv4) and `[::1]:8053` (IPv6); either address works. The matching `ProxyPassReverse` directive rewrites `Location` headers in responses so that any redirects point back to the correct public URL.
+
+### `SSLUseStapling on`
+
+Instructs Apache to perform OCSP stapling — proactively fetching the certificate's revocation status from the CA and caching it. This stapled response is then included in the TLS handshake, eliminating the need for clients to contact the CA directly during connection setup. This is essential for DNS-over-HTTPS: without it, a client that has no working DNS yet cannot verify the server certificate, causing a circular dependency on startup.
+
+### `SSLStaplingCache shmcb:/var/lib/apache2/stapling_cache(512000)`
+
+Defines the shared-memory cache used to store the fetched OCSP responses. The `shmcb` provider is recommended for multi-process Apache deployments. The size `512000` (bytes) is sufficient for a small number of certificates; increase it if you are hosting many virtual hosts with stapling enabled.
+
+### `SSLCipherSuite` and `SSLHonorCipherOrder On`
+
+Restricts the negotiated cipher to a set of strong ECDH and DH-based AEAD ciphers, and instructs Apache to prefer the server's cipher order over the client's. This prevents clients from negotiating weaker ciphers even if they advertise support for them.
+
+## Testing the Configuration
+
+After reloading Apache (`sudo apachectl graceful`), verify the DoH endpoint:
+
+```bash
+curl -H 'accept: application/dns-json' \
+  'https://your.server/dns-query?name=example.com&type=A'
+```
+
+A successful response returns a JSON object with the DNS answer:
+
+```json
+{
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": false,
+  "CD": false,
+  "Question": [{ "name": "example.com.", "type": 1 }],
+  "Answer": [{ "name": "example.com.", "type": 1, "TTL": 3600, "data": "93.184.216.34" }]
+}
+```

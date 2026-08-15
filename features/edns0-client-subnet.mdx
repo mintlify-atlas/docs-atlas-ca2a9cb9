@@ -1,0 +1,210 @@
+---
+title: "EDNS0-Client-Subnet for GeoDNS and CDN Optimization"
+sidebarTitle: "EDNS0-Client-Subnet"
+description: "DNS-over-HTTPS forwards a masked client IP to upstream resolvers for GeoDNS and CDN optimization using the EDNS0-Client-Subnet extension."
+---
+
+EDNS0-Client-Subnet (ECS) is a DNS extension ([RFC 7871](https://www.rfc-editor.org/rfc/rfc7871)) that allows a recursive resolver to include a portion of the client's IP address when forwarding a query to an authoritative server. Authoritative servers — especially those operated by CDNs and large content networks — use this subnet hint to return geographically optimal records, directing users to the nearest edge node. Without ECS, all queries from a shared resolver appear to originate from the resolver itself, causing CDN algorithms to route all clients to the same region regardless of where they actually are.
+
+DNS-over-HTTPS supports ECS at both the client (`doh-client`) and server (`doh-server`) layers.
+
+---
+
+## How ECS Works in doh-client
+
+When `doh-client` forwards a DNS query to an upstream DoH server, it automatically appends an ECS option carrying a masked version of the originating client's IP address.
+
+### IP Address Extraction
+
+The client IP is derived from the source address of the UDP or TCP connection that reached `doh-client` on its local listening socket (typically `127.0.0.1:53`). For queries arriving from applications on the same machine this will be the loopback address, but when `doh-client` is acting as a network resolver for other hosts it will be the actual client IP.
+
+### Default Masking
+
+To preserve privacy while still enabling city-level geolocation, the IP is masked before it is sent:
+
+| Address Family | Default Mask | Example                         |
+|----------------|--------------|---------------------------------|
+| IPv4           | `/24`        | `203.0.113.45` → `203.0.113.0` |
+| IPv6           | `/56`        | `2001:db8::1` → `2001:db8::/56`|
+
+This masking is applied in `doh-client/ietf.go`:
+
+```go
+if ipv4 := ednsClientAddress.To4(); ipv4 != nil {
+    ednsClientFamily = 1
+    ednsClientAddress = ipv4
+    ednsClientNetmask = 24
+} else {
+    ednsClientFamily = 2
+    ednsClientNetmask = 56
+}
+```
+
+### Protocol-Specific Encoding
+
+The masked subnet is appended to the upstream request in a protocol-appropriate way:
+
+**Google JSON protocol** — the subnet is added as a query string parameter:
+
+```
+GET /dns-query?name=www.example.com&type=A&ct=application/dns-json&edns_client_subnet=203.0.113.0/24
+```
+
+**IETF wire-format protocol** — the subnet is inserted as an `EDNS0_SUBNET` option in the OPT record of the DNS message before it is packed and sent.
+
+If the original DNS query from the upstream application already includes its own EDNS0-Client-Subnet option, `doh-client` honours it as-is and does not override it.
+
+---
+
+## How ECS Works in doh-server
+
+`doh-server` performs its own ECS injection when forwarding queries to the upstream recursive resolver. It determines the real client IP from the HTTP request metadata rather than from the DNS message itself.
+
+### Client IP Sources (in priority order)
+
+The server checks these HTTP headers and fields in sequence, using the first globally routable IP it finds:
+
+1. **`X-Forwarded-For`** header — the server scans the comma-separated list and takes the first globally routable IP.
+2. **`X-Real-IP`** header — used as a fallback if `X-Forwarded-For` is absent or contains no global IPs.
+3. **`RemoteAddr`** — the raw TCP peer address as a last resort.
+
+The relevant logic from `doh-server/server.go`:
+
+```go
+XForwardedFor := r.Header.Get("X-Forwarded-For")
+if XForwardedFor != "" {
+    for _, addr := range strings.Split(XForwardedFor, ",") {
+        addr = strings.TrimSpace(addr)
+        ip := net.ParseIP(addr)
+        if jsondns.IsGlobalIP(ip) {
+            return ip
+        }
+    }
+}
+XRealIP := r.Header.Get("X-Real-IP")
+if XRealIP != "" {
+    addr := strings.TrimSpace(XRealIP)
+    ip := net.ParseIP(addr)
+    if s.conf.ECSAllowNonGlobalIP || jsondns.IsGlobalIP(ip) {
+        return ip
+    }
+}
+```
+
+### Non-Global IPs
+
+By default, private and loopback addresses (RFC 1918, link-local, etc.) are filtered out and not forwarded as ECS data. This prevents internal network topology from leaking to external resolvers. To allow non-global IPs — for example in a private lab environment — set:
+
+```toml
+ecs_allow_non_global_ip = true
+```
+
+### Masking on the Server Side
+
+The same default masks apply on the server side: `/24` for IPv4 and `/56` for IPv6. The address is masked before being placed in the EDNS0 option, so the authoritative server never sees the full client IP.
+
+To instead send the complete unmasked IP to the upstream resolver, set:
+
+```toml
+ecs_use_precise_ip = true
+```
+
+When `ecs_use_precise_ip = true`, the server sets a `/32` mask for IPv4 and `/128` for IPv6, as seen in `doh-server/ietf.go`:
+
+```go
+if s.conf.ECSUsePreciseIP {
+    ednsClientNetmask = 32
+} else {
+    ednsClientNetmask = 24
+    ednsClientAddress = ednsClientAddress.Mask(net.CIDRMask(24, 32))
+}
+```
+
+---
+
+## Privacy Implications
+
+A `/24` subnet covers 256 IPv4 addresses — typically corresponding to a city block or a neighbourhood served by a single ISP. This resolution is sufficient for CDN geolocation and video streaming edge selection but is not granular enough to identify an individual user.
+
+As the README states:
+
+> Keep in mind that /24 is not enough to track a single user, although it is precise enough to know the city where the user is located.
+
+---
+
+## Disabling ECS
+
+If you prefer not to disclose any part of your IP address to upstream resolvers or authoritative servers, you can opt out of ECS entirely on the client side:
+
+```toml
+# /etc/dns-over-https/doh-client.conf
+
+[others]
+no_ecs = true
+```
+
+When `no_ecs = true`, `doh-client` will not append any EDNS0-Client-Subnet option to outgoing queries. The trade-off is that CDN and streaming services may route you to a non-optimal edge node, which can result in slower download speeds or higher video buffering.
+
+Alternatively, a per-request opt-out is available for server-side ECS by appending `?no_ecs=true` to the DoH query URL, which `doh-server` will honour.
+
+---
+
+## Configuring the Reverse Proxy for ECS
+
+For `doh-server` to see the real client IP (rather than the reverse proxy's address), your HTTP service muxer must forward the original client address. Without this, all queries will appear to originate from the loopback or the proxy's internal IP, and ECS will not work correctly.
+
+**Nginx** — add `X-Real-IP` and `X-Forwarded-For` to the `proxy_pass` location block:
+
+```nginx
+location /dns-query {
+    proxy_pass       http://localhost:8053/dns-query;
+    proxy_set_header Host             $host;
+    proxy_set_header X-Real-IP        $remote_addr;
+    proxy_set_header X-Forwarded-For  $proxy_add_x_forwarded_for;
+}
+```
+
+**Apache** — enable `mod_proxy` headers:
+
+```apache
+<VirtualHost *:443>
+    ServerName doh.example.com
+    ProxyPass /dns-query http://[::1]:8053/dns-query
+    ProxyPassReverse /dns-query http://[::1]:8053/dns-query
+    RequestHeader set X-Forwarded-For "%{REMOTE_ADDR}s"
+</VirtualHost>
+```
+
+**Caddy** — client IP forwarding is automatic when using `reverse_proxy`.
+
+---
+
+## Configuring Unbound or BIND for ECS
+
+If `doh-server` forwards queries to a local Unbound or BIND instance, that resolver also needs to be configured to pass ECS data to authoritative servers. Otherwise the ECS option will be stripped at the recursive resolver boundary and CDNs will not benefit from the subnet hint.
+
+**Unbound** (`/etc/unbound/unbound.conf`):
+
+```yaml
+server:
+    # Send client subnet to authoritative servers
+    module-config: "subnetcache validator iterator"
+
+# Configure the ECS module
+subnet:
+    send-client-subnet: 0.0.0.0/0
+    send-client-subnet: ::0/0
+    client-subnet-always-forward: yes
+```
+
+**BIND** (`named.conf.options`):
+
+```
+options {
+    // Forward ECS to authoritative servers
+    send-cookie no;   // disable DNS cookies if they interfere
+    // ECS is enabled by default in BIND 9.11+; ensure the ACL allows it
+};
+```
+
+After restarting your recursive resolver, CDN lookups routed through `doh-server` → local resolver → authoritative will carry the masked client subnet all the way to the authoritative nameserver.

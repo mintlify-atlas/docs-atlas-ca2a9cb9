@@ -1,0 +1,213 @@
+---
+title: "Upstream Load Balancing and Selector Algorithms"
+sidebarTitle: "Upstream Selectors"
+description: "Configure how doh-client distributes queries across multiple upstream DoH servers using random, weighted round-robin, or LVS weighted round-robin."
+---
+
+When multiple upstream DoH servers are configured in `doh-client`, a **selector algorithm** determines which upstream receives each DNS query. The selector is configured with `upstream_selector` inside the `[upstream]` section of `doh-client.conf`.
+
+```toml
+[upstream]
+upstream_selector = "weighted_round_robin"
+```
+
+The three available algorithms offer different trade-offs between simplicity, load distribution, and health-aware sequencing.
+
+---
+
+## Selector Algorithms
+
+<Tabs>
+  <Tab title="Random">
+    ### `random` (Default)
+
+    The **random** selector picks an upstream at random for every incoming DNS query, with equal probability regardless of the `weight` value assigned to each upstream. Weight values are completely ignored in this mode.
+
+    This is the simplest and lowest-overhead selector. It works well when all upstreams have similar latency and reliability, and no proportional distribution is needed.
+
+    **Config:**
+
+    ```toml
+    [upstream]
+    upstream_selector = "random"
+
+    [[upstream.upstream_ietf]]
+        url = "https://cloudflare-dns.com/dns-query"
+        weight = 50   # ignored in random mode
+
+    [[upstream.upstream_ietf]]
+        url = "https://dns.google/dns-query"
+        weight = 50   # ignored in random mode
+    ```
+
+    **Behaviour:**
+    - Each query independently picks a random upstream.
+    - No state is maintained between queries.
+    - Health feedback from `ReportUpstreamStatus` has no effect in this mode — failed upstreams continue to be selected at the same probability.
+  </Tab>
+
+  <Tab title="Weighted Round-Robin">
+    ### `weighted_round_robin` (Nginx-style WRR)
+
+    The **weighted round-robin** selector distributes queries proportionally to each upstream's configured `weight`. Upstreams with higher weights receive a larger share of queries. This algorithm is modelled on the smooth WRR implementation used by Nginx.
+
+    The algorithm maintains a running `currentWeight` per upstream. On each query selection, every upstream's `effectiveWeight` is added to its `currentWeight`; the upstream with the highest `currentWeight` is selected, then its `currentWeight` is reduced by the total effective weight across all upstreams. This produces a smooth, proportionally distributed sequence.
+
+    **Config:**
+
+    ```toml
+    [upstream]
+    upstream_selector = "weighted_round_robin"
+
+    [[upstream.upstream_ietf]]
+        url = "https://cloudflare-dns.com/dns-query"
+        weight = 60
+
+    [[upstream.upstream_ietf]]
+        url = "https://dns.google/dns-query"
+        weight = 40
+    ```
+
+    In this example, approximately 60% of queries go to Cloudflare and 40% to Google.
+
+    **Behaviour:**
+    - Weights must be in the range `(0, 100]`.
+    - Queries are distributed smoothly — the WRR sequence avoids sending bursts to any single upstream.
+    - Health feedback adjusts each upstream's `effectiveWeight` dynamically (see [Health-Based Selection](#health-based-selection) below).
+    - The evaluation loop probes upstreams every 15 seconds to adjust effective weights.
+  </Tab>
+
+  <Tab title="LVS Weighted Round-Robin">
+    ### `lvs_weighted_round_robin` (LVS-style WRR)
+
+    The **LVS weighted round-robin** selector uses the Linux Virtual Server (LVS) WRR algorithm for upstream selection. Like the nginx-style WRR, it distributes queries proportionally to `weight`, but uses a different sequencing approach: it iterates through the upstream list using a rolling `currentWeight` that decreases by the GCD of all effective weights each cycle, producing a deterministic and smooth distribution.
+
+    This algorithm is suited for scenarios where strict, mathematically regular distribution across upstreams is preferred over the nginx smooth WRR approach.
+
+    **Config:**
+
+    ```toml
+    [upstream]
+    upstream_selector = "lvs_weighted_round_robin"
+
+    [[upstream.upstream_ietf]]
+        url = "https://cloudflare-dns.com/dns-query"
+        weight = 60
+
+    [[upstream.upstream_ietf]]
+        url = "https://dns.google/dns-query"
+        weight = 40
+    ```
+
+    **Behaviour:**
+    - Weights must be in the range `(0, 100]`.
+    - Selection is based on `effectiveWeight`, not the raw configured `weight`, allowing health feedback to reduce traffic to degraded upstreams.
+    - The evaluation loop also probes upstreams every 15 seconds to adjust effective weights.
+    - Weight adjustments on failure are slightly more conservative than the nginx WRR implementation (see penalty values in the table below).
+  </Tab>
+</Tabs>
+
+---
+
+## Configuration Syntax
+
+The `upstream_selector` key and upstream entries are all placed under the `[upstream]` table. Both `upstream_google` and `upstream_ietf` entry types can appear in the same configuration:
+
+```toml
+[upstream]
+upstream_selector = "weighted_round_robin"
+
+# IETF RFC 8484 upstreams (application/dns-message)
+[[upstream.upstream_ietf]]
+    url = "https://cloudflare-dns.com/dns-query"
+    weight = 60
+
+[[upstream.upstream_ietf]]
+    url = "https://dns.google/dns-query"
+    weight = 40
+
+# Google JSON API upstreams (application/dns-json)
+# [[upstream.upstream_google]]
+#     url = "https://dns.google.com/resolve"
+#     weight = 50
+```
+
+Each `[[upstream.upstream_ietf]]` or `[[upstream.upstream_google]]` block defines one upstream entry with:
+
+| Key | Type | Description |
+|---|---|---|
+| `url` | string | The full HTTPS URL of the DoH resolver endpoint |
+| `weight` | integer | Relative weight in `(0, 100]`; ignored when `upstream_selector = "random"` |
+
+---
+
+## Health-Based Selection
+
+For the `weighted_round_robin` and `lvs_weighted_round_robin` selectors, `doh-client` continuously monitors upstream health and adjusts each upstream's **effective weight** dynamically. Two mechanisms drive this:
+
+### 1. Active Health Probes
+
+Both WRR selectors run a background evaluation loop that sends a test DNS query (`www.example.com A`) to each upstream every **15 seconds**. Based on the response:
+
+- A **successful** response increases the upstream's effective weight (up to its configured maximum).
+- A **failed connection** or **server error response** decreases the effective weight (minimum floor of `1`).
+
+### 2. Per-Query Status Reports
+
+After each real DNS query, `doh-client` calls `ReportUpstreamStatus` with the outcome:
+
+| Status | Nginx WRR penalty | LVS WRR penalty |
+|---|---|---|
+| `OK` (HTTP 2xx) | `effectiveWeight += 1` (capped at `weight`) | `effectiveWeight += 1` (capped at `weight`) |
+| `Error` (HTTP 5xx) | `effectiveWeight -= 3` (floor: `1`) | `effectiveWeight -= 2` (floor: `1`) |
+| `Timeout` | `effectiveWeight -= 5` (floor: `1`) | `effectiveWeight -= 5` (floor: `1`) |
+
+This means a repeatedly failing or slow upstream will have its effective weight reduced toward `1` and receive far fewer queries, while healthy upstreams recover toward their configured weight over time.
+
+The `random` selector **ignores** all status reports — no health adjustment is performed in random mode.
+
+---
+
+## Mixing Google and IETF Upstreams
+
+Both `upstream_google` and `upstream_ietf` upstream types can coexist in the same configuration. The client dispatches each query to the appropriate protocol handler based on the upstream type:
+
+- **`upstream_google`** entries use the Google JSON API (`application/dns-json`).
+- **`upstream_ietf`** entries use the IETF binary wire format ([RFC 8484](https://www.rfc-editor.org/rfc/rfc8484.txt), `application/dns-message`).
+
+All entries across both types participate in the same selector pool:
+
+```toml
+[upstream]
+upstream_selector = "weighted_round_robin"
+
+# Google JSON API
+[[upstream.upstream_google]]
+    url = "https://dns.google.com/resolve"
+    weight = 30
+
+# IETF RFC 8484
+[[upstream.upstream_ietf]]
+    url = "https://cloudflare-dns.com/dns-query"
+    weight = 50
+
+[[upstream.upstream_ietf]]
+    url = "https://dns.google/dns-query"
+    weight = 20
+```
+
+---
+
+## Weight Range
+
+Weights must be in the range **`(0, 100]`** — that is, greater than zero and at most 100. A weight of `0` or below is rejected by the WRR selectors.
+
+Weights are **relative** within the pool. A pool with weights `60` and `40` behaves identically to one with weights `6` and `4` or `3` and `2`.
+
+When `upstream_selector = "random"`, weight values have no effect and are silently ignored.
+
+---
+
+<Note>
+If no upstreams are configured in `doh-client.conf` (neither `upstream_google` nor `upstream_ietf` entries), the client automatically falls back to Google DNS at `https://dns.google.com/resolve` with a weight of `50`, using the Google JSON API format. To use a different resolver, always define at least one upstream entry explicitly in your configuration.
+</Note>

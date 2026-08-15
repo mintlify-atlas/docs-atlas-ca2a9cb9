@@ -1,0 +1,150 @@
+---
+title: "doh-server Command-Line Reference"
+sidebarTitle: "doh-server"
+description: "Complete CLI reference for doh-server: flags for config file path, verbose logging, version output, and PID file management on Linux/BSD."
+---
+
+`doh-server` is the HTTP server daemon that receives DNS-over-HTTPS requests from clients (such as `doh-client` or any RFC 8484-compatible resolver) and resolves them against one or more upstream DNS resolvers. It supports both the IETF wire-format protocol (RFC 8484) and the Google JSON DoH API.
+
+## Synopsis
+
+```
+doh-server [-conf <path>] [-verbose] [-version] [-pid-file <path>]
+```
+
+## Flags
+
+<ParamField query="-conf" type="string" default="doh-server.conf">
+  Path to the configuration file. When a relative path is given, it is resolved
+  against the current working directory at process startup.
+</ParamField>
+
+<ParamField query="-verbose" type="bool" default="false">
+  Enable verbose logging. When set, this flag overrides the `verbose` setting in
+  the configuration file, forcing verbose mode on regardless of the file's value.
+  In verbose mode, `doh-server` emits combined access logs (Apache/nginx format)
+  to stdout via the `gorilla/handlers` logger.
+</ParamField>
+
+<ParamField query="-version" type="bool" default="false">
+  Print the version string (currently `2.3.10`) and the project homepage URL,
+  then exit immediately with code 0.
+
+  ```
+  doh-server 2.3.10
+  Homepage: https://github.com/m13253/dns-over-https
+  ```
+</ParamField>
+
+<ParamField query="-pid-file" type="string">
+  *(Linux/BSD only)* Path to a PID file. When specified, `doh-server` writes its
+  process ID to this file before starting. If the file already exists and the
+  recorded PID corresponds to a running process, the new instance logs a message
+  and exits instead of starting a second daemon. If the existing PID is no longer
+  running, the stale file is removed and the new instance proceeds normally.
+
+  See the [note below](#pid-file-platform-availability) regarding platform
+  availability.
+</ParamField>
+
+## HTTP Endpoints
+
+`doh-server` registers a single HTTP handler on the path configured by the `path`
+key in `doh-server.conf` (default: `/dns-query`). The handler accepts both `GET`
+and `POST` requests and automatically selects the correct protocol based on the
+`Content-Type` / `ct` query parameter and the `Accept` header.
+
+### IETF RFC 8484 — DNS wire format
+
+```
+GET  <path>?ct=application/dns-message&dns=<base64url-encoded-wire-format>
+POST <path>
+     Content-Type: application/dns-message
+     Body: <raw DNS wire-format message>
+```
+
+The response is a binary DNS message with `Content-Type: application/dns-message`.
+
+### Google JSON DoH API
+
+```
+GET <path>?name=<domain>&type=<rrtype>[&cd=<bool>][&do=<bool>][&no_ecs=<bool>]
+```
+
+The response is a JSON object with `Content-Type: application/json`. The schema
+follows the Google Public DNS-over-HTTPS JSON API format.
+
+If neither a `name` nor a `dns` parameter is present, the server returns HTTP
+`415 Unsupported Media Type`.
+
+## CORS Support
+
+`doh-server` sets the following CORS headers on every response, allowing
+browser-based DoH clients to query the server directly without a proxy:
+
+| Header | Value |
+|--------|-------|
+| `Access-Control-Allow-Origin` | `*` |
+| `Access-Control-Allow-Methods` | `GET, HEAD, OPTIONS, POST` |
+| `Access-Control-Allow-Headers` | `Content-Type` |
+| `Access-Control-Max-Age` | `3600` |
+
+`OPTIONS` preflight requests are handled automatically and return HTTP `200` with
+an empty body.
+
+## Response Headers
+
+In addition to CORS headers, `doh-server` sets the following headers on DNS
+responses:
+
+| Header | Description |
+|--------|-------------|
+| `Content-Type` | `application/dns-message` (RFC 8484) or `application/json` (Google API) |
+| `Date` | Current date/time in HTTP date format |
+| `Last-Modified` | Timestamp of the DNS response (derived from answer TTLs) |
+| `Cache-Control` | `max-age=<min-ttl>` derived from the minimum TTL in the answer section |
+| `Expires` | Absolute expiry time derived from the minimum TTL |
+| `Vary` | `Accept` — informs caches that the response format depends on the `Accept` header |
+| `Server` | `DNS-over-HTTPS/2.3.10 (+https://github.com/m13253/dns-over-https)` |
+| `X-Powered-By` | Same as `Server` |
+
+## Usage Examples
+
+**Start with a system-wide configuration file:**
+
+```bash
+doh-server -conf /etc/dns-over-https/doh-server.conf
+```
+
+**Start with verbose access logging enabled:**
+
+```bash
+doh-server -conf /etc/dns-over-https/doh-server.conf -verbose
+```
+
+**Print version information and exit:**
+
+```bash
+doh-server -version
+```
+
+## PID File Platform Availability
+
+<Note>
+  The `-pid-file` flag is compiled in and available **only** on the following
+  operating systems: Linux, FreeBSD, OpenBSD, NetBSD, and DragonFlyBSD. On
+  macOS, Windows, and other platforms the flag is silently absent from the help
+  output and will produce an error if supplied. Use cgroup-based process tracking
+  or your service manager's built-in supervision instead.
+</Note>
+
+## Production Deployment
+
+<Tip>
+  `doh-server` speaks plain HTTP by default (or HTTPS if `cert` and `key` are
+  set in the config). In production, always place `doh-server` **behind a
+  TLS-terminating reverse proxy** such as nginx, Caddy, or Traefik. This allows
+  you to manage certificates with standard tooling (e.g., Let's Encrypt via
+  Certbot or ACME), enforce HTTP/2 or HTTP/3, and apply rate limiting and
+  access-control rules without modifying `doh-server` itself.
+</Tip>

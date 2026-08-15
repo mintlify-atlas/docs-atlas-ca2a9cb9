@@ -1,0 +1,205 @@
+---
+title: "Supported DNS-over-HTTPS Protocol Formats"
+sidebarTitle: "Protocols"
+description: "DNS-over-HTTPS supports both Google JSON DoH and IETF RFC 8484 wire-format. Learn how each protocol works and when to use each."
+---
+
+This project implements two distinct DNS-over-HTTPS protocols: the [Google DNS-over-HTTPS JSON protocol](https://developers.google.com/speed/public-dns/docs/dns-over-https) and the [IETF RFC 8484 wire-format protocol](https://www.rfc-editor.org/rfc/rfc8484.txt). Both protocols share the same endpoint (`/dns-query` by default), and `doh-server` auto-detects which format to use based on the request's `Content-Type` and `Accept` headers, while `doh-client` selects the protocol based on which upstream list the server is configured under.
+
+## Google DNS-over-HTTPS JSON Protocol
+
+The Google protocol encodes DNS queries and responses as JSON objects transmitted over plain HTTPS GET requests. It is human-readable and easy to debug with standard HTTP tooling.
+
+### Request Format
+
+Queries are issued as `GET` requests with the following query parameters:
+
+```
+GET /dns-query?name=<name>&type=<type>&ct=application/dns-json
+```
+
+| Parameter             | Required | Description                                                                 |
+|-----------------------|----------|-----------------------------------------------------------------------------|
+| `name`                | Yes      | The fully-qualified domain name to query (e.g. `www.example.com`).         |
+| `type`                | Yes      | DNS record type as a string (`A`, `AAAA`, `MX`, …) or numeric type code.   |
+| `ct`                  | No       | Set to `application/dns-json` to explicitly request JSON format.            |
+| `cd`                  | No       | Set to `1` to disable DNSSEC checking (Checking Disabled flag).             |
+| `do`                  | No       | Set to `1` to request DNSSEC signatures (DNSSEC OK flag).                   |
+| `edns_client_subnet`  | No       | Client subnet hint in CIDR notation, e.g. `203.0.113.0/24` or `0/0` to suppress ECS. |
+
+The request `Accept` header should include `application/json`:
+
+```http
+Accept: application/json, application/dns-message, application/dns-udpwireformat
+```
+
+### Response Format
+
+The server responds with a JSON object carrying all standard DNS response fields:
+
+```json
+{
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": false,
+  "CD": false,
+  "Question": [
+    { "name": "www.example.com.", "type": 1 }
+  ],
+  "Answer": [
+    {
+      "name": "www.example.com.",
+      "type": 1,
+      "TTL": 300,
+      "Expires": "Mon, 01 Jan 2024 00:05:00 UTC",
+      "data": "93.184.216.34"
+    }
+  ]
+}
+```
+
+| Field               | Description                                                        |
+|---------------------|--------------------------------------------------------------------|
+| `Status`            | Standard DNS response code (RCODE), e.g. `0` = NOERROR.           |
+| `TC`                | Truncated — the full response did not fit in a single message.     |
+| `RD`                | Recursion Desired — set by the client.                             |
+| `RA`                | Recursion Available — set by the server.                           |
+| `AD`                | Authenticated Data — all response data validated with DNSSEC.      |
+| `CD`                | Checking Disabled — the client opted out of DNSSEC validation.     |
+| `Question`          | Array of question records (name + type).                           |
+| `Answer`            | Array of answer resource records.                                  |
+| `Authority`         | Array of authority resource records.                               |
+| `Additional`        | Array of additional resource records.                              |
+| `edns_client_subnet`| The ECS scope returned by the upstream resolver.                   |
+| `Comment`           | Optional human-readable error comment.                             |
+
+The response `Content-Type` is `application/json; charset=UTF-8`.
+
+### Difference from Google's Original Implementation
+
+This implementation uses an **absolute expiry timestamp** (`Expires` field formatted as RFC 1123) on each resource record rather than a relative TTL value. This makes TTL handling unambiguous across caching layers, since the record's expiry is fixed at the moment the upstream resolver returns it. The `TTL` field is still present for compatibility.
+
+From `json-dns/marshal.go`:
+
+```go
+jsonRR.Expires = now.Add(time.Duration(jsonRR.TTL) * time.Second)
+jsonRR.ExpiresStr = jsonRR.Expires.Format(time.RFC1123)
+```
+
+---
+
+## IETF RFC 8484 Wire-Format Protocol
+
+The IETF protocol (RFC 8484) transmits standard DNS wire-format messages over HTTPS. It is the recommended interoperable format for DoH clients and resolvers.
+
+### GET Request
+
+When the encoded query URL is shorter than 2,048 characters, `doh-client` uses a GET request with the DNS message Base64URL-encoded in the `dns` query parameter:
+
+```
+GET /dns-query?ct=application/dns-message&dns=<base64url-encoded DNS message>
+```
+
+This threshold is enforced directly in the client code (`doh-client/ietf.go`):
+
+```go
+if len(requestURL) < 2048 {
+    req, err = http.NewRequest(http.MethodGet, requestURL, http.NoBody)
+} else {
+    req, err = http.NewRequest(http.MethodPost, upstream.URL, bytes.NewReader(requestBinary))
+    req.Header.Set("Content-Type", "application/dns-message")
+}
+```
+
+### POST Request
+
+For larger queries (URL ≥ 2,048 characters), `doh-client` switches to a POST request with the raw DNS wire-format message in the request body:
+
+```http
+POST /dns-query HTTP/2
+Content-Type: application/dns-message
+
+<binary DNS wire-format message>
+```
+
+`doh-server` also accepts POST requests with `Content-Type: application/dns-message` or the legacy `application/dns-udpwireformat` type, reading the query from the request body when the `dns` query parameter is absent.
+
+### Response
+
+The server responds with the binary DNS wire-format message:
+
+```http
+HTTP/2 200 OK
+Content-Type: application/dns-message
+Date: Mon, 01 Jan 2024 00:00:00 GMT
+Last-Modified: Mon, 01 Jan 2024 00:00:00 GMT
+Cache-Control: public, max-age=300
+Expires: Mon, 01 Jan 2024 00:05:00 GMT
+
+<binary DNS wire-format response>
+```
+
+### Cache Headers
+
+The server sets standard HTTP cache headers based on the smallest TTL across all returned records:
+
+| Header          | Value                                                                          |
+|-----------------|--------------------------------------------------------------------------------|
+| `Date`          | Current server time in HTTP date format.                                       |
+| `Last-Modified` | Set to the same value as `Date` at response time.                              |
+| `Cache-Control` | `public, max-age=<LeastTTL>` or `private, max-age=<LeastTTL>` (if ECS-tailored). |
+| `Expires`       | Absolute expiry time of the shortest-lived record.                             |
+
+---
+
+## Supported DNS Record Features
+
+Both protocols support the full range of standard DNS record types. Specific features confirmed in the source code and documentation include:
+
+- **IPv4 / IPv6 records** — A and AAAA records are fully supported.
+- **EDNS0 large UDP packets** — Default UDP buffer size is 4 KiB (`dns.DefaultMsgSize`).
+- **EDNS0-Client-Subnet** — Client subnet forwarded by default: `/24` for IPv4, `/56` for IPv6. See [EDNS0-Client-Subnet](/features/edns0-client-subnet) for full details.
+- **DNSSEC (AD, CD flags)** — The `AD` (Authenticated Data) and `CD` (Checking Disabled) flags are passed through unchanged. See [DNSSEC](/features/dnssec) for full details.
+- **AXFR / IXFR zone transfers** — Zone transfer requests are automatically forwarded over TCP. If an IXFR response contains only an SOA record, the server retries using TCP automatically.
+
+---
+
+## Protocol Selection
+
+### doh-client
+
+The client selects the protocol per upstream based on which list the upstream URL is declared in within `doh-client.conf`:
+
+```toml
+[upstream]
+
+# Upstreams using the Google JSON protocol
+[[upstream.upstream_google]]
+url = "https://dns.google.com/resolve"
+weight = 50
+
+# Upstreams using the IETF wire-format protocol
+[[upstream.upstream_ietf]]
+url = "https://cloudflare-dns.com/dns-query"
+weight = 50
+```
+
+### doh-server
+
+The server auto-detects the protocol from the incoming request. The decision tree is:
+
+1. If the `ct` query parameter or `Content-Type` header is `application/dns-json` → Google protocol.
+2. If `ct` / `Content-Type` is `application/dns-message` or `application/dns-udpwireformat` → IETF protocol.
+3. If neither is set, the server guesses: presence of a `name` parameter → Google; presence of a `dns` parameter → IETF.
+
+The response format is selected from the request's `Accept` header (`application/json` → Google JSON; `application/dns-message` → IETF wire-format), falling back to matching the request format.
+
+---
+
+## Known Issues
+
+<Warning>
+  DNS-over-HTTPS does not work well with [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy). A partial workaround is included in the server code — it detects the `dnscrypt-proxy` user-agent and returns a crafted response — but full compatibility is not guaranteed. If you need both, consider using them independently rather than chaining them.
+</Warning>

@@ -1,28 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "DNS-over-HTTPS",
+  "projectType": "infrastructure",
+  "projectName": "DNS-over-HTTPS",
+  "projectDescription": "High-performance DNS-over-HTTPS client and server supporting both the Google DNS-over-HTTPS JSON protocol and IETF RFC 8484 wire-format protocol.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#e1773f",
-    "light": "#7fa7eb",
-    "dark": "#4c9c56"
-  },
-  "favicon": "https://media.brand.dev/c528e384-126f-4c77-b495-76153981d460.png",
-  "logo": {
-    "light": "https://media.brand.dev/908ef9c6-9ea8-4519-aefd-b7a378ed38da.svg",
-    "dark": "https://media.brand.dev/908ef9c6-9ea8-4519-aefd-b7a378ed38da.svg"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/m13253/dns-over-https"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/m13253/dns-over-https"
-    }
-  },
+  "primaryColor": "#e1773f",
+  "lightColor": "#7fa7eb",
+  "darkColor": "#4c9c56",
   "navigation": {
     "tabs": [
       {
@@ -99,5 +82,31 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Dual-protocol support: Google DNS-over-HTTPS JSON API and IETF RFC 8484 wire-format",
+    "HTTP/2 transport with TLS for encrypted DNS queries",
+    "Three upstream load-balancing selectors: random, weighted round-robin, LVS weighted round-robin",
+    "EDNS0-Client-Subnet (ECS) support for GeoDNS and CDN compatibility",
+    "DNSSEC-compatible with pass-through signature support",
+    "DNS-over-TLS upstream support in doh-server (tcp-tls prefix)",
+    "Passthrough domains for captive portals and NTP servers",
+    "Bootstrap DNS resolvers to avoid circular dependency",
+    "Systemd, launchd, and NetworkManager integration",
+    "Docker images for both client and server",
+    "Mutual TLS client certificate authentication",
+    "IPv4 and IPv6 dual-stack support"
+  ],
+  "publicApiSurface": [
+    "doh-client -conf <path> [-verbose] [-version] [-pid-file <path>]",
+    "doh-server -conf <path> [-verbose] [-version] [-pid-file <path>]",
+    "GET /dns-query?name=<name>&type=<type>[&cd=1&do=1&edns_client_subnet=<ip>/<mask>] (Google JSON protocol)",
+    "GET /dns-query?ct=application/dns-message&dns=<base64url> (IETF RFC 8484)",
+    "POST /dns-query (Content-Type: application/dns-message) (IETF RFC 8484)",
+    "jsondns.Marshal(msg *dns.Msg) *Response",
+    "jsondns.Unmarshal(reply *dns.Msg, resp *Response, udpSize uint16, ednsClientNetmask uint8) *dns.Msg",
+    "jsondns.PrepareReply(r *dns.Msg) *dns.Msg",
+    "config.LoadConfig(path string) (*Config, error)",
+    "selector.Selector interface: Get(), StartEvaluate(), ReportUpstreamStatus()"
+  ]
 }

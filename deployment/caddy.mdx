@@ -1,0 +1,103 @@
+---
+title: "Deploy DNS-over-HTTPS Behind Caddy"
+sidebarTitle: "Caddy"
+description: "Use Caddy v2 as a zero-config TLS reverse proxy for doh-server. Caddy handles certificate provisioning and OCSP stapling automatically."
+---
+
+Caddy v2 is the simplest way to put `doh-server` behind a production-grade TLS reverse proxy. It provisions and renews TLS certificates from Let's Encrypt automatically, and enables OCSP stapling by default — with no manual configuration required. If you are starting a new deployment and have no strong preference for a particular web server, Caddy is the recommended choice.
+
+<Tip>
+  Caddy is the recommended reverse proxy for new DNS-over-HTTPS deployments. Its automatic TLS certificate management and built-in OCSP stapling remove two of the most common configuration pitfalls, letting you go from zero to a fully compliant DoH server in minutes.
+</Tip>
+
+## Prerequisites
+
+- `doh-server` installed and listening on `localhost:8053` (the default).
+- [Caddy v2](https://caddyserver.com/docs/install) installed on the same host.
+- A public domain name pointing to the server (required for Let's Encrypt certificate issuance).
+- Port 80 and 443 open in your firewall (Caddy uses port 80 for the ACME HTTP challenge and OCSP fetching).
+
+## Caddyfile Configuration
+
+Create or edit your `/etc/caddy/Caddyfile` with the following block:
+
+```caddy
+my.server.name {
+  reverse_proxy * localhost:8053
+  tls your@email.address
+}
+```
+
+Replace `my.server.name` with your actual domain and `your@email.address` with a valid email address (used by Let's Encrypt for certificate expiry notifications).
+
+Reload Caddy to apply the configuration:
+
+```bash
+sudo systemctl reload caddy
+```
+
+## Automatic TLS via Let's Encrypt
+
+When Caddy starts and encounters a named site block (e.g. `my.server.name`), it automatically:
+
+1. Issues a TLS certificate from Let's Encrypt using the ACME HTTP-01 or TLS-ALPN-01 challenge.
+2. Stores the certificate and private key in its managed certificate store (typically `/var/lib/caddy/.local/share/caddy/`).
+3. Schedules background renewal before the certificate expires.
+
+No `ssl_certificate`, `ssl_certificate_key`, or `certbot` commands are required. If the domain is publicly reachable, Caddy handles the entire certificate lifecycle.
+
+## OCSP Stapling
+
+Caddy enables OCSP stapling by default for all managed certificates. This means:
+
+- Caddy periodically fetches the OCSP response from the CA and caches it in memory.
+- The cached response is included in every TLS handshake, so clients never need to contact the CA separately.
+- There is no circular DNS dependency on startup — the stapled OCSP response is ready before any client connects.
+
+This behaviour requires no configuration. It is one of the primary reasons Caddy is recommended for DNS-over-HTTPS deployments.
+
+## Path Routing
+
+The Caddyfile above uses `reverse_proxy * localhost:8053`, which proxies **all** paths on `my.server.name` to `doh-server`. `doh-server` is configured to respond only to its configured path (default `/dns-query`); requests to any other path receive a 404 from `doh-server` itself.
+
+If you want to host other services on the same domain alongside DoH, scope the reverse proxy to the DoH path only:
+
+```caddy
+my.server.name {
+  reverse_proxy /dns-query localhost:8053
+  # other directives for your website or API here
+  tls your@email.address
+}
+```
+
+## Testing the Configuration
+
+After Caddy has started and obtained a certificate, verify the endpoint:
+
+```bash
+curl -H 'accept: application/dns-json' \
+  'https://my.server.name/dns-query?name=example.com&type=A'
+```
+
+A successful response returns a JSON object with the DNS answer:
+
+```json
+{
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": false,
+  "CD": false,
+  "Question": [{ "name": "example.com.", "type": 1 }],
+  "Answer": [{ "name": "example.com.", "type": 1, "TTL": 3600, "data": "93.184.216.34" }]
+}
+```
+
+You can also test using the IETF wire-format protocol:
+
+```bash
+curl --http2 --silent \
+  -H 'content-type: application/dns-message' \
+  'https://my.server.name/dns-query?dns=AAABAAABAAAAAAAAA3d3dwdleGFtcGxlA2NvbQAAAQAB' | xxd | head
+```

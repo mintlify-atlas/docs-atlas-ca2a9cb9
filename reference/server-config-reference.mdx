@@ -1,0 +1,300 @@
+---
+title: "doh-server Configuration File Reference"
+sidebarTitle: "Server Config Ref"
+description: "Complete reference for all doh-server TOML configuration options: upstream DNS, listen addresses, TLS, ECS, logging, and client auth settings."
+---
+
+This page is a complete reference for every configuration option accepted by `doh-server`. Each option maps directly to a field in the TOML configuration file that `doh-server` reads on startup.
+
+## File Location
+
+The default configuration file is located at:
+
+```
+/etc/dns-over-https/doh-server.conf
+```
+
+To use a different file, pass the `-conf` flag when starting the daemon:
+
+```bash
+doh-server -conf /path/to/your/doh-server.conf
+```
+
+## Format
+
+The configuration file uses [TOML](https://toml.io/) syntax.
+
+---
+
+## Configuration Options
+
+<ParamField path="listen" type="array of strings" default='["127.0.0.1:8053", "[::1]:8053"]'>
+  List of local addresses on which `doh-server` listens for incoming HTTP (or HTTPS) connections. Each entry must be in `host:port` format.
+
+  Use `":8053"` (no host) to listen on all interfaces for both IPv4 and IPv6 simultaneously — equivalent to binding to both `0.0.0.0:8053` and `[::]:8053`.
+
+  ```toml
+  listen = [
+      "127.0.0.1:8053",
+      "[::1]:8053",
+
+      ## To listen on all interfaces:
+      # ":8053",
+  ]
+  ```
+</ParamField>
+
+<ParamField path="local_addr" type="string" default='""'>
+  Local IP address and port for outbound connections to upstream DNS resolvers. An empty string lets the operating system automatically assign a source address and ephemeral port.
+
+  Useful in multi-homed environments where you need to control which interface is used for upstream traffic.
+
+  ```toml
+  local_addr = ""
+  # local_addr = "192.168.1.10:0"
+  ```
+</ParamField>
+
+<ParamField path="cert" type="string" default='""'>
+  Path to the TLS certificate PEM file. Must be set together with `key`. When both `cert` and `key` are empty, `doh-server` serves plain HTTP.
+
+  It is strongly recommended to leave this empty and terminate TLS at a reverse proxy (e.g. Caddy or Nginx). `doh-server` does not implement OCSP Stapling, which is required for client bootstrapping in networks that have no traditional DNS available.
+
+  <Warning>
+    `cert` and `key` must either both be set or both be empty. Setting only one of the two will cause `doh-server` to refuse to start with the error: `You must specify both -cert and -key to enable TLS`.
+  </Warning>
+
+  ```toml
+  cert = ""
+  # cert = "/etc/ssl/certs/doh-server.crt"
+  ```
+</ParamField>
+
+<ParamField path="key" type="string" default='""'>
+  Path to the TLS private key PEM file. Must be set together with `cert`. See the `cert` option for details.
+
+  ```toml
+  key = ""
+  # key = "/etc/ssl/private/doh-server.key"
+  ```
+</ParamField>
+
+<ParamField path="path" type="string" default='"/dns-query"'>
+  HTTP URL path at which DNS-over-HTTPS queries are served. Clients send `GET` or `POST` requests to this path.
+
+  ```toml
+  path = "/dns-query"
+  ```
+</ParamField>
+
+<ParamField path="upstream" type="array of strings" default='["udp:1.1.1.1:53", "udp:1.0.0.1:53", "udp:8.8.8.8:53", "udp:8.8.4.4:53"]'>
+  List of upstream DNS resolvers to which `doh-server` forwards decoded DNS queries. Each entry must be prefixed with a transport type. See [Upstream Address Format](#upstream-address-format) below for supported prefixes.
+
+  If multiple upstreams are listed, one is selected **at random** for each incoming query.
+
+  ```toml
+  upstream = [
+      "udp:1.1.1.1:53",
+      "udp:1.0.0.1:53",
+      "udp:8.8.8.8:53",
+      "udp:8.8.4.4:53",
+  ]
+  ```
+</ParamField>
+
+<ParamField path="timeout" type="unsigned integer" default="10">
+  Maximum time in seconds to wait for a response from an upstream DNS resolver before treating the query as failed.
+
+  ```toml
+  timeout = 10
+  ```
+</ParamField>
+
+<ParamField path="tries" type="unsigned integer" default="1">
+  Number of upstream query attempts to make before returning a failure to the client. A value of `3` is recommended for production deployments to handle transient upstream errors gracefully.
+
+  ```toml
+  tries = 3
+  ```
+</ParamField>
+
+<ParamField path="verbose" type="boolean" default="false">
+  When `true`, logs every DNS request and its response to `stderr`. Useful for auditing, debugging query routing, or monitoring upstream behaviour.
+
+  ```toml
+  verbose = false
+  ```
+</ParamField>
+
+<ParamField path="log_guessed_client_ip" type="boolean" default="false">
+  When `true`, includes the client IP address inferred from the `X-Forwarded-For` or `X-Real-IP` HTTP headers in log output. Enable this when `doh-server` runs behind a reverse proxy.
+
+  Note: HTTP URI and User-Agent logging are always enabled and are not controlled by this option.
+
+  ```toml
+  log_guessed_client_ip = false
+  ```
+</ParamField>
+
+<ParamField path="ecs_allow_non_global_ip" type="boolean" default="false">
+  When `false` (the default), private, loopback, link-local, and other non-globally-routable IP addresses are never forwarded to upstream resolvers in EDNS0-Client-Subnet (ECS) records. This prevents upstream servers from learning internal network topology and avoids geolocation failures caused by RFC 1918 addresses.
+
+  Set to `true` only in controlled environments such as split-tunnel corporate networks where the upstream resolver needs the precise internal client address — for example, to apply DNS firewall policies.
+
+  ```toml
+  ecs_allow_non_global_ip = false
+  ```
+</ParamField>
+
+<ParamField path="ecs_use_precise_ip" type="boolean" default="false">
+  When `false` (the default), the client IP address in ECS records is masked to `/24` for IPv4 and `/128` for IPv6 before being forwarded, preserving approximate geolocation while reducing precision.
+
+  When `true`, the full, unmasked client IP is forwarded. Only enable this on private networks where knowledge of the exact endpoint is required (e.g. DNS-based firewall enforcement). **Do not enable on public-facing deployments** — forwarding precise IPs allows upstreams to identify individual users.
+
+  ```toml
+  ecs_use_precise_ip = false
+  ```
+</ParamField>
+
+<ParamField path="tls_client_auth" type="boolean" default="false">
+  When `true`, requires connecting clients to present a valid TLS client certificate signed by the CA specified in `tls_client_auth_ca`. Mutual TLS (mTLS) allows you to restrict access to `doh-server` to authorised clients only.
+
+  Requires `cert` and `key` to be set (TLS must be enabled directly on `doh-server` rather than terminated at a proxy).
+
+  ```toml
+  # tls_client_auth = true
+  ```
+</ParamField>
+
+<ParamField path="tls_client_auth_ca" type="string" default='""'>
+  Path to the Certificate Authority (CA) PEM file used to validate client certificates when `tls_client_auth = true`. Clients presenting certificates not signed by this CA will be rejected.
+
+  ```toml
+  # tls_client_auth_ca = "root-ca-public.crt"
+  ```
+</ParamField>
+
+<ParamField path="debug_http_headers" type="array of strings" default="[]">
+  List of HTTP **request** header names whose values should be included in debug log output. Has no effect unless `verbose = true`. Useful for logging custom headers injected by a reverse proxy or client applications.
+
+  ```toml
+  debug_http_headers = [
+      "x-request-id",
+      "x-custom-header",
+  ]
+  ```
+</ParamField>
+
+---
+
+## Upstream Address Format
+
+Every entry in the `upstream` array must be prefixed with a transport type followed by a colon:
+
+| Format | Description |
+|--------|-------------|
+| `udp:<host>:<port>` | UDP transport. If the upstream response is truncated or the server requests it, `doh-server` automatically retries the query over TCP. This is the most common choice. |
+| `tcp:<host>:<port>` | TCP only. No fallback or initial UDP attempt is made. |
+| `tcp-tls:<host>:<port>` | DNS-over-TLS (DoT) as defined in [RFC 7858](https://www.rfc-editor.org/rfc/rfc7858). Encrypts the upstream DNS connection. Use when forwarding to a DoT-capable resolver such as `853` on Cloudflare or Google. |
+
+**Examples:**
+
+```toml
+upstream = [
+    "udp:8.8.8.8:53",          # Google — UDP with TCP fallback
+    "tcp:8.8.8.8:53",          # Google — TCP only
+    "tcp-tls:8.8.8.8:853",     # Google — DNS-over-TLS
+    "tcp-tls:1.1.1.1:853",     # Cloudflare — DNS-over-TLS
+]
+```
+
+### Multiple Upstreams
+
+When more than one upstream is listed, `doh-server` picks one **at random** for each incoming query. This provides basic load distribution and resilience against individual upstream failures, but does not implement health checking — failed queries count against the `tries` budget and then return an error to the client.
+
+---
+
+## Complete Example Configuration
+
+The following is the annotated default `doh-server.conf` as shipped with the project:
+
+```toml
+# HTTP listen port
+listen = [
+    "127.0.0.1:8053",
+    "[::1]:8053",
+
+    ## To listen on both 0.0.0.0:8053 and [::]:8053, use the following line
+    # ":8053",
+]
+
+# Local address and port for upstream DNS
+# If left empty, a local address is automatically chosen.
+local_addr = ""
+
+# TLS certification file
+# If left empty, plain-text HTTP will be used.
+# You are recommended to leave empty and to use a server load balancer (e.g.
+# Caddy, Nginx) and set up TLS there, because this program does not do OCSP
+# Stapling, which is necessary for client bootstrapping in a network
+# environment with completely no traditional DNS service.
+cert = ""
+
+# TLS private key file
+key = ""
+
+# HTTP path for resolve application
+path = "/dns-query"
+
+# Upstream DNS resolver
+# If multiple servers are specified, a random one will be chosen each time.
+# You can use "udp", "tcp" or "tcp-tls" for the type prefix.
+# For "udp", UDP will first be used, and switch to TCP when the server asks to
+# or the response is too large.
+# For "tcp", only TCP will be used.
+# For "tcp-tls", DNS-over-TLS (RFC 7858) will be used to secure the upstream connection.
+upstream = [
+    "udp:1.1.1.1:53",
+    "udp:1.0.0.1:53",
+    "udp:8.8.8.8:53",
+    "udp:8.8.4.4:53",
+]
+
+# Upstream timeout
+timeout = 10
+
+# Number of tries if upstream DNS fails
+tries = 3
+
+# Enable logging
+verbose = false
+
+# Enable log IP from HTTPS-reverse proxy header: X-Forwarded-For or X-Real-IP
+# Note: http uri/useragent log cannot be controlled by this config
+log_guessed_client_ip = false
+
+# By default, non global IP addresses are never forwarded to upstream servers.
+# This is to prevent two things from happening:
+#   1. the upstream server knowing your private LAN addresses;
+#   2. the upstream server unable to provide geographically near results,
+#      or even fail to provide any result.
+# However, if you are deploying a split tunnel corporation network
+# environment, or for any other reason you want to inhibit this
+# behavior and allow local (eg RFC1918) address to be forwarded,
+# change the following option to "true".
+ecs_allow_non_global_ip = false
+
+# If ECS is added to the request, let the full IP address or
+# cap it to 24 or 128 mask. This option is to be used only on private
+# networks where knowledge of the terminal endpoint may be required for
+# security purposes (eg. DNS Firewalling). Not a good option on the
+# internet where IP address may be used to identify the user and
+# not only the approximate location.
+ecs_use_precise_ip = false
+
+# If DOH is used for a controlled network, it is possible to enable
+# the client TLS certificate validation with a specific certificate
+# authority used to sign any client one. Disabled by default.
+# tls_client_auth = true
+# tls_client_auth_ca = "root-ca-public.crt"
+```

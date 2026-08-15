@@ -1,0 +1,169 @@
+---
+title: "IETF RFC 8484 DNS-over-HTTPS Wire-Format Reference"
+sidebarTitle: "IETF RFC 8484"
+description: "Reference for the IETF RFC 8484 DNS-over-HTTPS wire-format endpoint. GET and POST methods, base64url encoding, and cache header behavior."
+---
+
+[RFC 8484](https://www.rfc-editor.org/rfc/rfc8484) defines the standard IETF DNS-over-HTTPS (DoH) protocol. Unlike the [Google JSON API](/reference/json-dns-api), this endpoint exchanges raw binary DNS messages in the standard wire format defined by [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035). Any DNS library that can construct or parse standard DNS messages can be used with this endpoint.
+
+## Endpoint
+
+```
+GET  /dns-query
+POST /dns-query
+```
+
+The path is configurable via the server's `path` setting. Both GET and POST are supported at the same path. The server selects the method based on the `Content-Type` header or the presence of the `dns` query parameter.
+
+## GET Request
+
+The GET method encodes the DNS query message as a base64url string (no padding) in the `dns` query parameter.
+
+**URL format:**
+
+```
+/dns-query?dns=<base64url-encoded-dns-message>&ct=application/dns-message
+```
+
+**Required headers:**
+
+| Header | Value |
+|--------|-------|
+| `Accept` | `application/dns-message` |
+
+**Query parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `dns` | Base64url-encoded (no padding, per RFC 4648 §5) DNS wire-format query message |
+| `ct` | `application/dns-message` — tells the server this is a wire-format request |
+
+The GET method is suitable when the base64url-encoded URL (including the `dns=` parameter) is shorter than 2048 characters, which covers the vast majority of standard DNS queries.
+
+## POST Request
+
+The POST method sends the raw binary DNS wire-format message directly as the request body.
+
+**Required headers:**
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `application/dns-message` |
+| `Accept` | `application/dns-message` |
+
+**Body:** Raw binary DNS wire-format message (no encoding).
+
+Use POST for larger queries where the base64url-encoded URL would reach or exceed 2048 characters, such as queries carrying large EDNS0 options or TSIG records.
+
+## DNS Message Format
+
+The binary DNS message format is the standard wire format defined in [RFC 1035 §4](https://www.rfc-editor.org/rfc/rfc1035#section-4). Use any DNS library in your language of choice to construct or parse messages. Popular options include:
+
+- **Go**: [`github.com/miekg/dns`](https://pkg.go.dev/github.com/miekg/dns)
+- **Python**: [`dnspython`](https://www.dnspython.org/)
+- **C**: [`ldns`](https://www.nlnetlabs.nl/projects/ldns/)
+- **Node.js**: [`dns-packet`](https://github.com/mafintosh/dns-packet)
+
+## Example Requests
+
+### GET
+
+```bash
+# Query example.com A record via GET
+# The dns= value below is a base64url-encoded standard DNS query
+curl -H 'Accept: application/dns-message' \
+  'https://your-server/dns-query?dns=AAABAAABAAAAAAAAA2V4YW1wbGUDY29tAAABAAE&ct=application/dns-message'
+```
+
+### POST
+
+```bash
+# First, write a DNS query to a binary file using a DNS library or tool,
+# then POST the raw bytes to the endpoint.
+curl -X POST \
+  -H 'Content-Type: application/dns-message' \
+  -H 'Accept: application/dns-message' \
+  --data-binary @query.bin \
+  'https://your-server/dns-query'
+```
+
+Using Python to construct and POST a DNS query:
+
+```python
+import dns.message
+import dns.rdatatype
+import requests
+
+# Build a standard DNS query for example.com A records
+query = dns.message.make_query('example.com', dns.rdatatype.A)
+
+response = requests.post(
+    'https://your-server/dns-query',
+    data=query.to_wire(),
+    headers={
+        'Content-Type': 'application/dns-message',
+        'Accept': 'application/dns-message',
+    }
+)
+
+# Parse the binary response
+answer = dns.message.from_wire(response.content)
+print(answer)
+```
+
+## Response Format
+
+The server responds with a binary DNS wire-format message.
+
+**Response headers:**
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `application/dns-message` |
+| `Date` | Current UTC time (RFC 1123) |
+| `Last-Modified` | Current UTC time (RFC 1123) |
+| `Cache-Control` | `public, max-age=<min-ttl>` or `private, max-age=<min-ttl>` |
+| `Expires` | Absolute expiry time based on the minimum TTL in the response |
+| `Vary` | `Accept, Accept-Encoding` |
+
+**HTTP response codes:**
+
+| HTTP Status | Meaning |
+|-------------|---------|
+| `200 OK` | Successful DNS response (DNS-level errors are carried inside the binary message) |
+| `400 Bad Request` | Invalid or missing `dns` parameter, or malformed DNS wire-format message |
+| `503 Service Unavailable` | Upstream returned SERVFAIL |
+
+The response body is the raw DNS wire-format reply. Parse it with the same DNS library you used to build the query.
+
+## Cache Headers
+
+The server sets HTTP cache headers based on the minimum TTL across all records in the response:
+
+- **`Cache-Control: public, max-age=<min-ttl>`** — set when the query was not tailored to a specific client (i.e., no per-client EDNS0 Client Subnet was injected). CDN and proxy caches may store and serve this response.
+- **`Cache-Control: private, max-age=<min-ttl>`** — set when the response was tailored to the client's IP address via an automatically injected ECS option. Intermediate caches must not share this response.
+- **`Expires`** — the absolute HTTP expiry time, computed as `now + min_TTL`.
+- **`Vary: Accept, Accept-Encoding`** — instructs caches to key responses separately by `Accept` and `Accept-Encoding` headers, since the same path serves both JSON and wire-format responses.
+
+If no TTL information is available (e.g., the response contains no records), `Cache-Control` and `Expires` headers are omitted.
+
+## EDNS0 Handling
+
+If the incoming DNS request does not already contain an EDNS0 OPT record, the server automatically inserts one with:
+
+- **UDP payload size**: 4096 bytes (`dns.DefaultMsgSize`)
+- **DNSSEC OK flag**: not set (matches the client's intent of not requesting DNSSEC)
+
+If the request already includes an OPT record, it is left intact and the server works with its existing flags and options.
+
+**EDNS0 Client Subnet (ECS):** If the request does not already include an EDNS0 Client Subnet option, the server injects one derived from the client's IP address, using `/24` for IPv4 and `/56` for IPv6 by default. This enables GeoDNS and CDN-aware resolution to work correctly. To override this behaviour, include your own ECS option in the DNS message, or disable ECS entirely by sending `SourceNetmask = 0`.
+
+## Transaction ID Handling
+
+The DNS wire-format response's transaction ID is set back to match the original request's ID before sending the response to the client. This ensures correct request/response correlation for DNS clients.
+
+Internally, the server replaces the transaction ID with a random value when forwarding the query to the upstream resolver, then restores the original ID in the response. This approach is consistent with the RFC 8484 recommendation to set the transaction ID to `0x0000` in cacheable responses, although this implementation echoes the original client ID instead of zeroing it, to maximise compatibility.
+
+<Note>
+  **DNSCrypt-Proxy compatibility workaround:** The server includes a special case for [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy) clients. When it detects a dnscrypt-proxy user-agent sending a known probe request with transaction ID `0xcafe`, it returns a hard-coded synthetic response. This works around a bug in dnscrypt-proxy that caused it to expect a specific response with transaction ID `0xcafe` during its DoH probe sequence. See [dnscrypt-proxy issue #526](https://github.com/jedisct1/dnscrypt-proxy/issues/526) for background.
+</Note>

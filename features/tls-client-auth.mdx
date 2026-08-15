@@ -1,0 +1,169 @@
+---
+title: "Mutual TLS Client Certificate Authentication"
+sidebarTitle: "TLS Client Auth"
+description: "Restrict access to your doh-server instance by requiring valid client TLS certificates signed by a specific CA. Configuration and certificate generation steps."
+---
+
+For private or controlled deployments, `doh-server` supports mutual TLS (mTLS) client authentication. When enabled, the server requires every connecting client to present a valid X.509 certificate signed by a trusted certificate authority (CA) that you control. Connections from clients that cannot present a valid certificate are refused at the TLS handshake layer, before any HTTP request is processed.
+
+---
+
+## When to Use mTLS Client Authentication
+
+mTLS client auth is appropriate when you are running a **private DoH server** and need to restrict access to a known set of authorised clients:
+
+- **Internal corporate DNS** — employees' devices are provisioned with client certificates as part of an MDM or PKI roll-out, ensuring only managed devices can resolve internal hostnames via the private DoH server.
+- **Personal or family DNS server** — limit access to specific devices without relying on IP allowlists (which break with mobile devices that roam across networks).
+- **Multi-tenant environments** — issue per-customer certificates so each customer's resolver access is independently revocable without affecting others.
+
+mTLS is not needed for public DoH servers where open access is intended.
+
+---
+
+## Server Configuration
+
+Enable client certificate authentication in `doh-server.conf`:
+
+```toml
+# Enable mutual TLS client authentication
+tls_client_auth     = true
+tls_client_auth_ca  = "root-ca-public.crt"
+```
+
+| Option               | Type   | Description                                                                    |
+|----------------------|--------|--------------------------------------------------------------------------------|
+| `tls_client_auth`    | bool   | Set to `true` to require client certificates on every connection.              |
+| `tls_client_auth_ca` | string | Path to the PEM-encoded CA certificate used to verify client certificates.     |
+
+Both options must be set together. If `tls_client_auth = true` is set without `tls_client_auth_ca`, the server will log a fatal error and exit:
+
+```
+TLS client authentication requires both tls_client_auth and tls_client_auth_ca, exiting.
+```
+
+### TLS Requirements
+
+mTLS requires that the server itself is also serving TLS directly (i.e. not relying solely on a TLS-terminating reverse proxy). The server certificate and key must be configured:
+
+```toml
+cert = "/etc/dns-over-https/server.crt"
+key  = "/etc/dns-over-https/server.key"
+```
+
+When both `cert`/`key` **and** `tls_client_auth` are set, `doh-server` creates an `http.Server` with a `tls.Config` that sets `ClientAuth: tls.RequireAndVerifyClientCert` and loads the CA pool from the file specified in `tls_client_auth_ca`. The certificate key pair is loaded dynamically on each new TLS handshake, so certificate rotation does not require a server restart.
+
+From `doh-server/server.go`:
+
+```go
+srvtls := &http.Server{
+    Handler: servemux,
+    Addr:    addr,
+    TLSConfig: &tls.Config{
+        ClientCAs:  clientCAPool,
+        ClientAuth: tls.RequireAndVerifyClientCert,
+        GetCertificate: func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
+            c, err := tls.LoadX509KeyPair(s.conf.Cert, s.conf.Key)
+            ...
+            return &c, nil
+        },
+    },
+}
+err = srvtls.ListenAndServeTLS("", "")
+```
+
+---
+
+## Creating a CA and Client Certificate with OpenSSL
+
+The following steps create a self-signed CA and issue a client certificate signed by that CA.
+
+### Step 1 — Generate the CA Key and Certificate
+
+```bash
+# Generate a 4096-bit RSA private key for the CA
+openssl genrsa -out root-ca-private.key 4096
+
+# Create a self-signed CA certificate valid for 10 years
+openssl req -x509 -new -nodes \
+    -key root-ca-private.key \
+    -sha256 \
+    -days 3650 \
+    -out root-ca-public.crt \
+    -subj "/CN=DoH Private CA/O=My Organisation"
+```
+
+Keep `root-ca-private.key` secure — anyone with access to it can issue certificates that your server will accept.
+
+### Step 2 — Generate a Client Key and Certificate Signing Request (CSR)
+
+```bash
+# Generate a private key for the client
+openssl genrsa -out client.key 2048
+
+# Create a CSR — adjust the subject to identify the client
+openssl req -new \
+    -key client.key \
+    -out client.csr \
+    -subj "/CN=My Laptop/O=My Organisation"
+```
+
+### Step 3 — Sign the Client Certificate with the CA
+
+```bash
+# Sign the CSR with the CA, producing a certificate valid for 2 years
+openssl x509 -req \
+    -in client.csr \
+    -CA root-ca-public.crt \
+    -CAkey root-ca-private.key \
+    -CAcreateserial \
+    -out client.crt \
+    -days 730 \
+    -sha256
+```
+
+This produces `client.crt` (the signed certificate) and updates `root-ca-public.srl` (serial number file).
+
+### Step 4 — Distribute the Client Certificate
+
+Provide the following files to each authorised client:
+
+| File         | Purpose                                          |
+|--------------|--------------------------------------------------|
+| `client.key` | Client's private key — keep confidential.        |
+| `client.crt` | Client's certificate — present during TLS handshake. |
+| `root-ca-public.crt` | CA certificate — needed to verify the server (if using a private server cert). |
+
+To revoke a client's access, issue a new Certificate Revocation List (CRL) and restart `doh-server` with an updated CA bundle that excludes the revoked serial, or simply do not renew the certificate when it expires.
+
+---
+
+## Configuring doh-client to Use a Client Certificate
+
+`doh-client` does not have built-in first-class support for presenting a client TLS certificate via its configuration file. The recommended approaches are:
+
+**Option A — TLS-terminating forward proxy with client cert injection**
+Deploy a local TLS proxy (e.g. [mitmproxy](https://mitmproxy.org/), [nginx stream proxy](https://nginx.org/en/docs/stream/ngx_stream_proxy_module.html), or [stunnel](https://www.stunnel.org/)) on the same machine as `doh-client`. Configure the proxy to attach the client certificate to outgoing TLS connections to the DoH server. `doh-client` connects to the proxy over plain HTTP, and the proxy handles mTLS.
+
+**Option B — Custom HTTP transport (for application integration)**
+If you are embedding DoH resolution in a Go application, you can supply a custom `http.Transport` to the underlying HTTP client with the certificate loaded:
+
+```go
+cert, _ := tls.LoadX509KeyPair("client.crt", "client.key")
+tlsConfig := &tls.Config{
+    Certificates: []tls.Certificate{cert},
+}
+transport := &http.Transport{TLSClientConfig: tlsConfig}
+httpClient := &http.Client{Transport: transport}
+```
+
+---
+
+## Warnings and Notes
+
+<Warning>
+  Enabling TLS client auth without a well-managed certificate distribution process will immediately lock out all clients. Before enabling `tls_client_auth = true` in production, verify that: (1) the CA certificate path in `tls_client_auth_ca` is readable by the `doh-server` process, (2) at least one valid client certificate signed by that CA has been distributed to your clients, and (3) you have a tested procedure to issue replacement certificates before existing ones expire. A misconfigured mTLS setup produces TLS handshake failures with no DNS fallback, causing complete DNS resolution outages for affected clients.
+</Warning>
+
+<Note>
+  Mutual TLS client certificate authentication was added in **version 2.2.5** of DNS-over-HTTPS. If you are running an older version, upgrade before attempting to use these configuration options.
+</Note>

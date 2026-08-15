@@ -1,0 +1,101 @@
+---
+title: "Run DNS-over-HTTPS with Docker"
+sidebarTitle: "Docker"
+description: "Deploy doh-client and doh-server as Docker containers using official images. Covers environment variables, port mappings, and the satishweb image."
+---
+
+Docker is the fastest way to get DNS-over-HTTPS running without installing Go or compiling from source. Both `doh-client` and `doh-server` are available as pre-built images, and a well-maintained community image provides environment-variable-based configuration for `doh-server`.
+
+## Available images
+
+| Image | Description |
+|-------|-------------|
+| `m13253/dns-over-https-server:latest` | Official latest build of `doh-server` |
+| `m13253/dns-over-https-client:latest` | Official latest build of `doh-client` |
+| `satishweb/doh-server` | Community image with environment-variable configuration; supports multiple upstream DNS servers |
+
+## Running doh-server
+
+The `satishweb/doh-server` image is the recommended choice for most deployments because it accepts configuration entirely through environment variables — no config file editing required.
+
+```bash
+docker run -d --name doh-server \
+  -p 8053:8053 \
+  -e UPSTREAM_DNS_SERVER="udp:208.67.222.222:53,udp:208.67.220.220:53" \
+  -e DOH_HTTP_PREFIX="/dns-query" \
+  -e DOH_SERVER_LISTEN=":8053" \
+  -e DOH_SERVER_TIMEOUT="10" \
+  -e DOH_SERVER_TRIES="3" \
+  -e DOH_SERVER_VERBOSE="false" \
+  satishweb/doh-server
+```
+
+### Environment variables
+
+| Variable | Example value | Description |
+|----------|---------------|-------------|
+| `UPSTREAM_DNS_SERVER` | `udp:208.67.222.222:53,udp:208.67.220.220:53` | Upstream DNS resolvers (comma-separated). Supports `udp:` and `tcp:` schemes. |
+| `DOH_HTTP_PREFIX` | `/dns-query` | URL path prefix for the DoH endpoint |
+| `DOH_SERVER_LISTEN` | `:8053` | Address and port the server listens on |
+| `DOH_SERVER_TIMEOUT` | `10` | Query timeout in seconds |
+| `DOH_SERVER_TRIES` | `3` | Number of retry attempts per query |
+| `DOH_SERVER_VERBOSE` | `false` | Enable verbose request logging (`true`/`false`) |
+
+<Note>
+  Multiple upstream DNS server support was added to the `satishweb/doh-server` container image on **2024-12-19**. Earlier versions of the image only accepted a single upstream DNS server address.
+</Note>
+
+## Exposed ports
+
+| Image | Port | Protocol | Purpose |
+|-------|------|----------|---------|
+| `m13253/dns-over-https-client` | `53` | UDP | Standard DNS |
+| `m13253/dns-over-https-client` | `53` | TCP | Standard DNS |
+| `m13253/dns-over-https-client` | `5380` | TCP | Alternative DNS listener |
+| `m13253/dns-over-https-server` | `8053` | TCP | DoH HTTP endpoint |
+| `satishweb/doh-server` | `8053` | TCP | DoH HTTP endpoint |
+
+## Mounting a custom configuration file
+
+If you need fine-grained control beyond what environment variables offer, you can mount a custom `doh-server.conf` directly into the container:
+
+```bash
+docker run -d --name doh-server \
+  -p 8053:8053 \
+  -v /path/to/your/doh-server.conf:/doh-server.conf \
+  m13253/dns-over-https-server:latest
+```
+
+Replace `/path/to/your/doh-server.conf` with the absolute path to your configuration file on the host. The container reads its configuration from `/doh-server.conf` by default.
+
+Similarly, for `doh-client`:
+
+```bash
+docker run -d --name doh-client \
+  -p 53:53/udp -p 53:53/tcp \
+  -v /path/to/your/doh-client.conf:/doh-client.conf \
+  m13253/dns-over-https-client:latest
+```
+
+## Building your own Docker image from source
+
+Both `Dockerfile.client` and `Dockerfile.server` in the repository use a **multi-stage build** based on `golang:alpine`. The first stage compiles the binary and the second stage produces a minimal `alpine`-based runtime image.
+
+**Build the server image:**
+
+```bash
+docker build -f Dockerfile.server -t my-doh-server .
+```
+
+**Build the client image:**
+
+```bash
+docker build -f Dockerfile.client -t my-doh-client .
+```
+
+The Dockerfiles follow this pattern:
+
+1. **Build stage** (`golang:alpine`) — installs `git` and `make`, copies the source, runs `make doh-server/doh-server` (or `doh-client/doh-client`)
+2. **Runtime stage** (`alpine:latest`) — copies only the compiled binary and default config file, exposes the relevant ports, and sets the binary as the entrypoint
+
+This produces a small, self-contained image with no Go toolchain in the final layer.

@@ -1,0 +1,89 @@
+---
+title: "DNS-over-HTTPS Deployment Architecture"
+sidebarTitle: "Architecture"
+description: "Understand the recommended DNS-over-HTTPS deployment topology with doh-client, HTTP cache/CDN, reverse proxy, doh-server, and upstream resolvers."
+---
+
+DNS-over-HTTPS is composed of several cooperating components. On the client side, `doh-client` intercepts ordinary DNS queries from local applications and tunnels them over HTTPS to a remote `doh-server`. On the server side, `doh-server` receives those HTTPS requests, resolves them against an upstream recursive DNS resolver, and returns the answers. Between those two endpoints, optional HTTP caching and an HTTP service muxer (reverse proxy) handle TLS termination, request routing, and caching to improve performance and scalability.
+
+## Architecture Diagram
+
+The following diagram illustrates the full recommended topology:
+
+```
++--------------+                                +------------------------+
+| Application  |                                |  Recursive DNS Server  |
++-------+------+                                +-----------+------------+
+        |                                                   |
++-------+------+                                +-----------+------------+
+| Client side  |                                |      doh-server        |
+| cache (nscd) |                                +-----------+------------+
++-------+------+                                            |
+        |         +--------------------------+  +-----------+------------+
++-------+------+  |    HTTP cache server /   |  |   HTTP service muxer   |
+|  doh-client  +--+ Content Delivery Network +--+ (Apache, Nginx, Caddy) |
++--------------+  +--------------------------+  +------------------------+
+```
+
+## Component Roles
+
+| Component | Role |
+|---|---|
+| **doh-client** | Listens on `127.0.0.1:53`, accepts DNS queries from local applications and the client-side cache (e.g. `nscd`), and forwards them over HTTPS to the configured DoH server. |
+| **HTTP cache server / CDN** | An optional caching layer between `doh-client` and the HTTP service muxer. Caches DNS responses according to their TTL, reducing load on `doh-server` and improving latency for repeated queries. |
+| **HTTP service muxer (Apache, Nginx, Caddy)** | Terminates TLS, handles OCSP stapling, enforces security headers, and reverse-proxies DoH requests to the locally running `doh-server`. Also allows DoH to be co-hosted on port 443 alongside other web services. |
+| **doh-server** | Receives DNS-over-HTTPS requests (Google JSON protocol and IETF RFC 8484 wire format), forwards them to an upstream recursive DNS resolver over UDP, TCP, or DNS-over-TLS, and returns the result as an HTTPS response. |
+| **Recursive DNS Server** | The upstream resolver (e.g. Unbound, BIND, or a public resolver) that performs the actual DNS recursion. For best privacy, run your own resolver using Unbound or BIND with DNSSEC validation enabled. |
+
+## Standalone vs. Production Deployment
+
+### Standalone (client only)
+
+In the simplest setup, `doh-client` is configured to talk directly to a public DoH server. No `doh-server` of your own is required. Popular public endpoints include:
+
+- **Cloudflare** — `https://cloudflare-dns.com/dns-query`
+- **Google** — `https://dns.google/dns-query`
+- **Quad9** — `https://dns.quad9.net/dns-query`
+
+Install `doh-client`, point it at one of these URLs in `/etc/dns-over-https/doh-client.conf`, then set your system DNS to `127.0.0.1`.
+
+### Production (self-hosted server)
+
+When running your own `doh-server`, the recommended production topology is:
+
+1. **`doh-server`** listens on `127.0.0.1:8053` (and/or `[::1]:8053`), forwarding queries to a local recursive resolver such as Unbound.
+2. **Reverse proxy** (Apache, Nginx, or Caddy) listens on port 443, terminates TLS, and `proxy_pass`es `/dns-query` to `doh-server`.
+3. An optional **HTTP cache** (Varnish, Squid, or a CDN) sits between the public internet and the reverse proxy.
+
+## HTTP/2 and TLS Recommendation
+
+HTTP/2 with at least **TLS v1.3** is strongly recommended for all production deployments. HTTP/2 multiplexing reduces connection overhead when many DNS queries arrive simultaneously. TLS v1.3 provides improved handshake performance and forward secrecy.
+
+**OCSP stapling must be enabled** on the reverse proxy. See the warning below for the reason.
+
+<Warning>
+  If OCSP stapling is **not** enabled on your TLS-terminating reverse proxy, the client's TLS library must contact the CA's OCSP responder to verify the server certificate before the connection is established. That verification requires a DNS lookup — but DNS is not yet available because it depends on this very connection succeeding. This circular dependency can cause `doh-client` (and any other application that starts before DNS is available) to hang or fail on boot. Always enable OCSP stapling on your reverse proxy.
+</Warning>
+
+Note: `doh-server` itself can be configured to serve TLS directly (via the `cert` and `key` options), but this approach is **not recommended** because `doh-server` does not perform OCSP stapling. Use a reverse proxy instead.
+
+## Co-Hosting DoH with Other Services
+
+Because the HTTP service muxer routes requests by path, `doh-server` can share port 443 with any number of other HTTPS services on the same host. The DoH endpoint is typically served at `/dns-query`, while your website or API occupies the root path. No separate IP address or port is needed.
+
+## Reverse Proxy Setup Guides
+
+<CardGroup cols={2}>
+  <Card title="Nginx" href="/deployment/nginx">
+    Configure Nginx as a TLS-terminating reverse proxy with HTTP/2, OCSP stapling, and security headers.
+  </Card>
+  <Card title="Apache" href="/deployment/apache">
+    Configure Apache with mod\_ssl, mod\_proxy, and mod\_http2 for a production DoH deployment.
+  </Card>
+  <Card title="Caddy" href="/deployment/caddy">
+    Use Caddy v2 for zero-config automatic TLS and OCSP stapling — the simplest path to production.
+  </Card>
+  <Card title="Docker Compose" href="/deployment/docker-compose">
+    Full-stack Docker Compose setup with Traefik, doh-server, and Unbound for Linux and Raspberry Pi.
+  </Card>
+</CardGroup>
