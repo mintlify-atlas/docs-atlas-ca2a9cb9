@@ -27,7 +27,7 @@ The configuration file uses [TOML](https://toml.io/) syntax. Sections are declar
 
 ## Top-Level Options
 
-<ParamField path="listen" type="array of strings" default='["127.0.0.1:53", "127.0.0.1:5380", "[::1]:53", "[::1]:5380"]'>
+<ParamField path="listen" type="array of strings" default='["127.0.0.1:53", "[::1]:53"]'>
   List of local addresses on which `doh-client` listens for incoming DNS queries. Each entry must be in `host:port` format. Both UDP and TCP are served on every listed address simultaneously.
 
   Use `":53"` (no host) to listen on all interfaces for both IPv4 and IPv6 in a single entry — equivalent to `0.0.0.0:53` and `[::]:53`.
@@ -35,9 +35,7 @@ The configuration file uses [TOML](https://toml.io/) syntax. Sections are declar
   ```toml
   listen = [
       "127.0.0.1:53",
-      "127.0.0.1:5380",
       "[::1]:53",
-      "[::1]:5380",
   ]
   ```
 </ParamField>
@@ -135,11 +133,11 @@ Miscellaneous client behaviour settings including bootstrap resolvers, timeouts,
   ```
 </ParamField>
 
-<ParamField path="timeout" type="unsigned integer" default="30">
-  Maximum time in seconds that `doh-client` waits for a complete HTTP response from an upstream DoH server before treating the request as failed.
+<ParamField path="timeout" type="unsigned integer" default="10">
+  Maximum time in seconds that `doh-client` waits for a complete HTTP response from an upstream DoH server before treating the request as failed. The programmatic default is `10`; a different value can be set explicitly in the configuration file.
 
   ```toml
-  timeout = 30
+  timeout = 10
   ```
 </ParamField>
 
@@ -198,6 +196,17 @@ Miscellaneous client behaviour settings including bootstrap resolvers, timeouts,
   ```
 </ParamField>
 
+<ParamField path="debug_http_headers" type="array of strings" default="[]">
+  List of HTTP response header names whose values should be included in debug log output. Has no effect unless `verbose = true`. Useful for inspecting cache status headers (e.g. `cf-cache-status`) or other diagnostic headers returned by upstream servers.
+
+  ```toml
+  debug_http_headers = [
+      "cf-cache-status",
+      "x-request-id",
+  ]
+  ```
+</ParamField>
+
 <ParamField path="insecure_tls_skip_verify" type="boolean" default="false">
   When `true`, disables TLS certificate verification for all HTTPS connections to upstream DoH servers. The client will accept any certificate, including self-signed or expired ones.
 
@@ -207,17 +216,6 @@ Miscellaneous client behaviour settings including bootstrap resolvers, timeouts,
 
   ```toml
   insecure_tls_skip_verify = false
-  ```
-</ParamField>
-
-<ParamField path="debug_http_headers" type="array of strings" default="[]">
-  List of HTTP response header names whose values should be included in debug log output. Has no effect unless `verbose = true`. Useful for inspecting cache status headers (e.g. `cf-cache-status`) or other diagnostic headers returned by upstream servers.
-
-  ```toml
-  debug_http_headers = [
-      "cf-cache-status",
-      "x-request-id",
-  ]
   ```
 </ParamField>
 
@@ -369,6 +367,10 @@ no_user_agent = false
 
 # Enable logging
 verbose = false
+
+# Log specific HTTP response headers when verbose = true
+# debug_http_headers = ["cf-cache-status", "x-request-id"]
+debug_http_headers = []
 
 # insecure_tls_skip_verification will disable necessary TLS security verification.
 # This option is designed for testing or development purposes,

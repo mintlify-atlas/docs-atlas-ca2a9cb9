@@ -1,7 +1,7 @@
 ---
-title: "Deploy DNS-over-HTTPS Behind Apache"
+title: "Apache Reverse Proxy Configuration for DNS-over-HTTPS"
 sidebarTitle: "Apache"
-description: "Configure Apache as a reverse proxy for doh-server with TLS, HTTP/2, OCSP stapling, and proxy pass to the local DoH server port."
+description: "Set up Apache HTTP Server with mod_ssl and mod_proxy as a TLS-terminating reverse proxy for doh-server, with HTTP/2 and OCSP stapling."
 ---
 
 Apache HTTP Server can serve as a robust TLS-terminating reverse proxy for `doh-server`, providing HTTP/2 multiplexing, OCSP stapling, and flexible request routing. This guide covers a minimal but production-ready Apache VirtualHost configuration that proxies DoH traffic to a locally running `doh-server` instance.

@@ -11,19 +11,18 @@ DNS-over-HTTPS (DoH) protects your DNS queries from eavesdropping and tampering 
 A typical deployment routes DNS traffic through several layers, allowing caching and CDN acceleration between the client and server:
 
 ```
-Application
-    │  (plain DNS on 127.0.0.1:53)
-    ▼
-doh-client          ← local DNS proxy
-    │  (HTTPS / HTTP2)
-    ▼
-HTTP Cache / CDN    ← optional, accelerates repeated lookups
-    │  (HTTP)
-    ▼
-doh-server          ← your DoH server (behind Nginx / Caddy / Apache)
-    │  (UDP or TCP)
-    ▼
-Upstream DNS        ← recursive resolver (Unbound, BIND, public resolvers…)
++--------------+                                +------------------------+
+| Application  |                                |  Recursive DNS Server  |
++-------+------+                                +-----------+------------+
+        |                                                   |
++-------+------+                                +-----------+------------+
+| Client side  |                                |      doh-server        |
+| cache (nscd) |                                +-----------+------------+
++-------+------+                                            |
+        |         +--------------------------+  +-----------+------------+
++-------+------+  |    HTTP cache server /   |  |   HTTP service muxer   |
+|  doh-client  +--+ Content Delivery Network +--+ (Apache, Nginx, Caddy) |
++--------------+  +--------------------------+  +------------------------+
 ```
 
 Although `doh-client` can talk directly to a public DoH resolver without running your own `doh-server`, placing an HTTP service muxer (e.g. Nginx, Caddy) in front of `doh-server` lets you share a single TLS endpoint with other HTTPS services and enables OCSP stapling — which is required to prevent DNS bootstrapping loops.

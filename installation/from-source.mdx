@@ -1,7 +1,7 @@
 ---
-title: "Build DNS-over-HTTPS from Source"
+title: "Install DNS-over-HTTPS from Source Using Go and Make"
 sidebarTitle: "From Source"
-description: "Build doh-client and doh-server from Go source on Linux or macOS using Make. Covers prerequisites, GOROOT, and uninstallation."
+description: "Build doh-client and doh-server from Go source on Linux or macOS using Make. Covers prerequisites, GOROOT, install paths, and uninstallation."
 ---
 
 Building DNS-over-HTTPS from source gives you the latest binaries for both `doh-client` and `doh-server` directly from the project repository. This approach works on Linux and macOS and uses a standard `make`-based workflow.
@@ -78,11 +78,15 @@ After running `sudo make install`, the following files are placed on your system
 - `/etc/dns-over-https/doh-client.conf.example` — reference copy of the default client config
 - `/etc/dns-over-https/doh-server.conf.example` — reference copy of the default server config
 
-**Systemd service units** (Linux only):
-- `doh-client.service`
-- `doh-server.service`
+**Systemd service units** (Linux only, installed to `/usr/lib/systemd/system/`):
+- `/usr/lib/systemd/system/doh-client.service`
+- `/usr/lib/systemd/system/doh-server.service`
 
-These unit files are installed into the system's systemd unit directory so that both services can be managed with `systemctl`.
+**NetworkManager dispatcher scripts** (Linux only, installed to `/etc/NetworkManager/dispatcher.d/`):
+- `/etc/NetworkManager/dispatcher.d/doh-client` — restarts `doh-client` when network interfaces change
+- `/etc/NetworkManager/dispatcher.d/doh-server` — restarts `doh-server` when network interfaces change
+
+These unit files and dispatcher scripts are installed so that both services can be managed with `systemctl` and respond automatically to network changes.
 
 ## macOS differences
 
@@ -101,7 +105,7 @@ sudo make uninstall
 ```
 
 <Note>
-  The uninstall target removes the binaries and service units, but **configuration files are intentionally preserved** at `/etc/dns-over-https/` (or `/usr/local/etc/dns-over-https/` on macOS). If you want to remove them completely, delete the directory manually:
+  The uninstall target removes the binaries, `.example` config files, and service units, but **active configuration files are intentionally preserved** at `/etc/dns-over-https/` (or `/usr/local/etc/dns-over-https/` on macOS). If you want to remove them completely, delete the directory manually:
 
   ```bash
   sudo rm -rf /etc/dns-over-https

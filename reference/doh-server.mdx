@@ -99,11 +99,11 @@ responses:
 
 | Header | Description |
 |--------|-------------|
-| `Content-Type` | `application/dns-message` (RFC 8484) or `application/json` (Google API) |
-| `Date` | Current date/time in HTTP date format |
-| `Last-Modified` | Timestamp of the DNS response (derived from answer TTLs) |
-| `Cache-Control` | `max-age=<min-ttl>` derived from the minimum TTL in the answer section |
-| `Expires` | Absolute expiry time derived from the minimum TTL |
+| `Content-Type` | `application/dns-message` (RFC 8484) or `application/json; charset=UTF-8` (Google JSON API) |
+| `Date` | Current date/time in HTTP date format at the moment the response is generated |
+| `Last-Modified` | Current date/time in HTTP date format (same value as `Date`) |
+| `Cache-Control` | `public, max-age=<min-ttl>` or `private, max-age=<min-ttl>` derived from the minimum TTL in the answer section; only present when TTL information is available |
+| `Expires` | Absolute expiry time derived from the minimum TTL; only present when TTL information is available |
 | `Vary` | `Accept` — informs caches that the response format depends on the `Accept` header |
 | `Server` | `DNS-over-HTTPS/2.3.10 (+https://github.com/m13253/dns-over-https)` |
 | `X-Powered-By` | Same as `Server` |

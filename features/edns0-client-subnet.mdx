@@ -46,7 +46,7 @@ The masked subnet is appended to the upstream request in a protocol-appropriate 
 
 **Google JSON protocol** — the subnet is added as a query string parameter:
 
-```
+```text
 GET /dns-query?name=www.example.com&type=A&ct=application/dns-json&edns_client_subnet=203.0.113.0/24
 ```
 
@@ -112,11 +112,23 @@ ecs_use_precise_ip = true
 When `ecs_use_precise_ip = true`, the server sets a `/32` mask for IPv4 and `/128` for IPv6, as seen in `doh-server/ietf.go`:
 
 ```go
-if s.conf.ECSUsePreciseIP {
-    ednsClientNetmask = 32
+if ipv4 := ednsClientAddress.To4(); ipv4 != nil {
+    ednsClientFamily = 1
+    ednsClientAddress = ipv4
+    if s.conf.ECSUsePreciseIP {
+        ednsClientNetmask = 32
+    } else {
+        ednsClientNetmask = 24
+        ednsClientAddress = ednsClientAddress.Mask(net.CIDRMask(24, 32))
+    }
 } else {
-    ednsClientNetmask = 24
-    ednsClientAddress = ednsClientAddress.Mask(net.CIDRMask(24, 32))
+    ednsClientFamily = 2
+    if s.conf.ECSUsePreciseIP {
+        ednsClientNetmask = 128
+    } else {
+        ednsClientNetmask = 56
+        ednsClientAddress = ednsClientAddress.Mask(net.CIDRMask(56, 128))
+    }
 }
 ```
 
@@ -143,7 +155,7 @@ If you prefer not to disclose any part of your IP address to upstream resolvers 
 no_ecs = true
 ```
 
-When `no_ecs = true`, `doh-client` will not append any EDNS0-Client-Subnet option to outgoing queries. The trade-off is that CDN and streaming services may route you to a non-optimal edge node, which can result in slower download speeds or higher video buffering.
+When `no_ecs = true`, `doh-client` sends an EDNS0-Client-Subnet option with address `0.0.0.0` and a zero-length prefix (the RFC 7871 §7.1.2 opt-out signal for the Google JSON protocol), meaning no client location information is disclosed to the upstream resolver or authoritative server. The trade-off is that CDN and streaming services may route you to a non-optimal edge node, which can result in slower download speeds or higher video buffering.
 
 Alternatively, a per-request opt-out is available for server-side ECS by appending `?no_ecs=true` to the DoH query URL, which `doh-server` will honour.
 
@@ -199,7 +211,7 @@ subnet:
 
 **BIND** (`named.conf.options`):
 
-```
+```text
 options {
     // Forward ECS to authoritative servers
     send-cookie no;   // disable DNS cookies if they interfere

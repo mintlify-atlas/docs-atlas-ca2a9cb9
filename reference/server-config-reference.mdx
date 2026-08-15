@@ -87,15 +87,13 @@ The configuration file uses [TOML](https://toml.io/) syntax.
   ```
 </ParamField>
 
-<ParamField path="upstream" type="array of strings" default='["udp:1.1.1.1:53", "udp:1.0.0.1:53", "udp:8.8.8.8:53", "udp:8.8.4.4:53"]'>
+<ParamField path="upstream" type="array of strings" default='["udp:8.8.8.8:53", "udp:8.8.4.4:53"]'>
   List of upstream DNS resolvers to which `doh-server` forwards decoded DNS queries. Each entry must be prefixed with a transport type. See [Upstream Address Format](#upstream-address-format) below for supported prefixes.
 
   If multiple upstreams are listed, one is selected **at random** for each incoming query.
 
   ```toml
   upstream = [
-      "udp:1.1.1.1:53",
-      "udp:1.0.0.1:53",
       "udp:8.8.8.8:53",
       "udp:8.8.4.4:53",
   ]
@@ -291,6 +289,10 @@ ecs_allow_non_global_ip = false
 # internet where IP address may be used to identify the user and
 # not only the approximate location.
 ecs_use_precise_ip = false
+
+# Log specific HTTP request headers when verbose = true
+# debug_http_headers = ["x-request-id", "x-forwarded-for"]
+debug_http_headers = []
 
 # If DOH is used for a controlled network, it is possible to enable
 # the client TLS certificate validation with a specific certificate

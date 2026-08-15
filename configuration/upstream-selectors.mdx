@@ -147,10 +147,15 @@ For the `weighted_round_robin` and `lvs_weighted_round_robin` selectors, `doh-cl
 
 ### 1. Active Health Probes
 
-Both WRR selectors run a background evaluation loop that sends a test DNS query (`www.example.com A`) to each upstream every **15 seconds**. Based on the response:
+Both WRR selectors run a background evaluation loop that sends a test DNS query (`www.example.com A`) to each upstream every **15 seconds**. The effective weight adjustments applied by the probe differ from per-query status reports:
 
-- A **successful** response increases the upstream's effective weight (up to its configured maximum).
-- A **failed connection** or **server error response** decreases the effective weight (minimum floor of `1`).
+| Probe outcome | Nginx WRR adjustment | LVS WRR adjustment |
+|---|---|---|
+| Successful response (HTTP 200, valid DNS answer) | `effectiveWeight += 5` (capped at `weight`) | `effectiveWeight += 5` (capped at `weight`) |
+| Non-200 HTTP response (server error) | `effectiveWeight -= 3` (floor: `1`) | `effectiveWeight -= 3` (floor: `1`) |
+| Connection failure (network error) | `effectiveWeight -= 10` (floor: `1`) | `effectiveWeight -= 5` (floor: `1`) |
+
+The probe runs independently of real DNS queries and is the primary mechanism for recovering an upstream's weight after a period of failures.
 
 ### 2. Per-Query Status Reports
 

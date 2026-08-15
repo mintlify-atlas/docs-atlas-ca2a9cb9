@@ -58,9 +58,10 @@ This guide walks you through building both `doh-client` and `doh-server` from so
     | Client config | `/etc/dns-over-https/doh-client.conf` |
     | Server config | `/etc/dns-over-https/doh-server.conf` |
     | Example configs | `/etc/dns-over-https/*.conf.example` |
-    | systemd units | `/etc/systemd/system/doh-client.service`, `doh-server.service` |
+    | systemd units (Linux) | `/usr/lib/systemd/system/doh-client.service`, `doh-server.service` |
+    | launchd plists (macOS) | `/Library/LaunchDaemons/doh-client.plist`, `doh-server.plist` |
 
-    On **macOS**, configuration files go to `/usr/local/etc/dns-over-https/` and launchd plists are installed instead of systemd units.
+    On **macOS**, configuration files go to `/usr/local/etc/dns-over-https/` and launchd plists are installed to `/Library/LaunchDaemons/` instead of systemd units.
   </Step>
 
   <Step title="Configure doh-client">

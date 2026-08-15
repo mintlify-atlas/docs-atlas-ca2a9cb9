@@ -1,7 +1,7 @@
 ---
-title: "Run DNS-over-HTTPS as a Systemd Service"
+title: "Manage DNS-over-HTTPS as a systemd Service on Linux"
 sidebarTitle: "Systemd"
-description: "Configure doh-client and doh-server as systemd services on Linux. Covers enabling, starting, stopping, logs, and NetworkManager integration."
+description: "Configure doh-client and doh-server as systemd services on Linux. Covers unit file directives, service management, logs, and NetworkManager integration."
 ---
 
 DNS-over-HTTPS ships with systemd service unit files for both `doh-client` and `doh-server`. Once installed, you can manage either component as a standard system service — with automatic startup at boot, log integration via `journald`, and automatic restart on failure.
@@ -98,23 +98,29 @@ sudo systemctl disable doh-server.service
 
 ## Service file details
 
-Both `doh-client.service` and `doh-server.service` are configured with several hardening and performance settings:
+Both `doh-client.service` and `doh-server.service` are installed to `/usr/lib/systemd/system/` and are configured with several hardening and performance settings:
 
 | Directive | Value | Effect |
 |-----------|-------|--------|
-| `DynamicUser=yes` | `yes` | Runs the process as an automatically created, ephemeral unprivileged user. No system user account needs to be created manually. |
+| `DynamicUser` | `yes` | Runs the process as an automatically created, ephemeral unprivileged user. No system user account needs to be created manually. |
 | `AmbientCapabilities` | `CAP_NET_BIND_SERVICE` | Grants the process permission to bind to privileged ports (such as port 53) without running as root. |
 | `Restart` | `always` | The service is automatically restarted if it exits for any reason. |
 | `RestartSec` | `1s` | Initial wait before the first restart attempt. |
 | `RestartMaxDelaySec` | `76s` | Maximum wait between restart attempts (exponential backoff cap). |
 | `RestartSteps` | `9` | Number of backoff steps between `RestartSec` and `RestartMaxDelaySec`. |
 | `LimitNOFILE` | `1048576` | Raises the open file descriptor limit to 1,048,576 for high-concurrency performance. |
+| `StartLimitIntervalSec` | `0` | Disables the default systemd rate-limit on service start attempts, allowing unlimited restarts. |
 
 The exponential backoff means that if the service crashes repeatedly, systemd will wait progressively longer between restarts — starting at 1 second and increasing up to 76 seconds — preventing excessive resource consumption in a crash loop.
 
 ## NetworkManager integration
 
-On Linux, `sudo make install` also installs NetworkManager dispatcher scripts into `/etc/NetworkManager/dispatcher.d/`. These scripts allow NetworkManager to automatically manage the DNS configuration when network interfaces come up or go down, coordinating with `doh-client` to route DNS queries correctly as network state changes.
+On Linux, `sudo make install` also installs two NetworkManager dispatcher scripts into `/etc/NetworkManager/dispatcher.d/`:
+
+- `doh-client` — restarts `doh-client.service` whenever a network interface comes up or goes down
+- `doh-server` — restarts `doh-server.service` whenever a network interface comes up or goes down
+
+These scripts allow NetworkManager to automatically manage both services as network state changes, ensuring DNS queries continue to route correctly after interface events.
 
 ## Updating system DNS to use doh-client
 

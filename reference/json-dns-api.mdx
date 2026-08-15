@@ -22,7 +22,7 @@ The path is configurable via the server's `path` setting. The default is `/dns-q
   Example: `example.com`
 </ParamField>
 
-<ParamField query="type" type="string | integer" required>
+<ParamField query="type" type="string | integer" optional>
   The DNS record type to query. Accepts either the standard mnemonic name (case-insensitive) or the numeric RR type value as a decimal integer. If omitted, defaults to `A` (type `1`).
 
   Common values: `A` (1), `AAAA` (28), `MX` (15), `TXT` (16), `CNAME` (5), `NS` (2), `SOA` (6), `PTR` (12), `SRV` (33), `CAA` (257), `ANY` (255).
@@ -31,9 +31,9 @@ The path is configurable via the server's `path` setting. The default is `/dns-q
 </ParamField>
 
 <ParamField query="ct" type="string" optional>
-  Content-type hint that controls the response format. Use `application/dns-json` to request a JSON response. If omitted, the server infers the format from the `Accept` header or from the presence of the `name` parameter.
+  Content-type hint that controls the request routing. Use `application/dns-json` to explicitly request a JSON response. If omitted, the server infers the format from the `Accept` header or from the presence of the `name` parameter.
 
-  Accepted values: `application/dns-json`, `application/json`
+  Accepted value: `application/dns-json`
 </ParamField>
 
 <ParamField query="cd" type="boolean" optional>
@@ -41,10 +41,6 @@ The path is configurable via the server's `path` setting. The default is `/dns-q
 
   Accepted truthy values: `1`, `true`  
   Accepted falsy values: `0`, `false`, or omit the parameter
-</ParamField>
-
-<ParamField query="do" type="boolean" optional>
-  Request DNSSEC records. Set `do=1` to set the DNSSEC OK (DO) flag in the EDNS0 OPT record, signalling that the client wants DNSSEC resource records (e.g. RRSIG, DNSKEY) included in the response. The server always sets this flag internally regardless of what the client requests.
 </ParamField>
 
 <ParamField query="edns_client_subnet" type="string" optional>
@@ -56,23 +52,21 @@ The path is configurable via the server's `path` setting. The default is `/dns-q
 
 ## Request Headers
 
+The server uses the `Accept` header together with the `ct` query parameter and the presence of `name` to determine the desired response format. The `Accept` header takes precedence over `ct`.
+
 | Header | Value | Notes |
 |--------|-------|-------|
 | `Accept` | `application/dns-json` | Preferred; signals JSON response |
 | `Accept` | `application/json` | Also accepted for JSON response |
 
-The server uses the `Accept` header together with the `ct` query parameter and the presence of `name` to determine the desired response format. The `Accept` header takes precedence.
-
 ## Example Requests
+
+The following examples show common query patterns against the JSON endpoint.
 
 ```bash
 # Query A record for example.com
 curl -H 'Accept: application/dns-json' \
   'https://your-server/dns-query?name=example.com&type=A'
-
-# Query with DNSSEC records requested
-curl -H 'Accept: application/dns-json' \
-  'https://your-server/dns-query?name=example.com&type=A&do=1'
 
 # Query with DNSSEC validation disabled
 curl -H 'Accept: application/dns-json' \
@@ -160,7 +154,7 @@ The response body is a JSON object with the following fields.
 
 ### RR (Resource Record) Object
 
-Each element in `Answer`, `Authority`, and `Additional` is an RR object:
+Each element in `Answer`, `Authority`, and `Additional` is an RR object with the following fields.
 
 <ResponseField name="name" type="string">
   The owner name of the record as a fully-qualified domain name with a trailing dot.
@@ -195,6 +189,8 @@ Each element in `Answer`, `Authority`, and `Additional` is an RR object:
 
 ### Question Object
 
+Each element in the `Question` array contains the following fields.
+
 <ResponseField name="name" type="string">
   The queried domain name as a fully-qualified domain name with a trailing dot.
 
@@ -213,9 +209,11 @@ Each element in `Answer`, `Authority`, and `Additional` is an RR object:
 | `400 Bad Request` | Invalid or missing query parameters |
 | `415 Unsupported Media Type` | Unrecognised `ct` value |
 | `500 Internal Server Error` | DNS packet serialisation failure |
-| `503 Service Unavailable` | Upstream returned SERVFAIL (`Status: 2`) |
+| `503 Service Unavailable` | Upstream DNS query failure or SERVFAIL (`Status: 2`) |
 
 ## Example Response
+
+The following is a successful A-record response.
 
 ```json
 {
@@ -282,6 +280,7 @@ Response headers also reflect caching information:
 - `Cache-Control: public, max-age=<min-ttl>` when the query was not tailored to the client (no per-client ECS)
 - `Cache-Control: private, max-age=<min-ttl>` when the response was tailored (ECS derived from the client IP)
 - `Expires`: set to the absolute expiry time of the record with the lowest TTL
+- `Vary: Accept` — instructs caches to key responses separately by `Accept` header, since the same path serves both JSON and wire-format responses
 
 <Note>
   Queries for non-INET (Internet) DNS classes are not supported. The server only handles standard `IN`-class queries. Any request for a different class will receive a `REFUSED` response from the upstream resolver.

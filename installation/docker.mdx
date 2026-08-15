@@ -1,7 +1,7 @@
 ---
-title: "Run DNS-over-HTTPS with Docker"
+title: "Deploy DNS-over-HTTPS with Docker: Images and Config"
 sidebarTitle: "Docker"
-description: "Deploy doh-client and doh-server as Docker containers using official images. Covers environment variables, port mappings, and the satishweb image."
+description: "Deploy doh-client and doh-server as Docker containers using official images. Covers port mappings, environment variables, and the satishweb image."
 ---
 
 Docker is the fastest way to get DNS-over-HTTPS running without installing Go or compiling from source. Both `doh-client` and `doh-server` are available as pre-built images, and a well-maintained community image provides environment-variable-based configuration for `doh-server`.
@@ -95,7 +95,7 @@ docker build -f Dockerfile.client -t my-doh-client .
 
 The Dockerfiles follow this pattern:
 
-1. **Build stage** (`golang:alpine`) — installs `git` and `make`, copies the source, runs `make doh-server/doh-server` (or `doh-client/doh-client`)
-2. **Runtime stage** (`alpine:latest`) — copies only the compiled binary and default config file, exposes the relevant ports, and sets the binary as the entrypoint
+1. **Build stage** (`golang:alpine`) — installs `git` and `make`, copies the source, runs `make doh-server/doh-server` (or `make doh-client/doh-client`)
+2. **Runtime stage** (`alpine:latest`) — copies only the compiled binary, adds the default config file, exposes the relevant ports, and sets the binary as the entrypoint
 
 This produces a small, self-contained image with no Go toolchain in the final layer.

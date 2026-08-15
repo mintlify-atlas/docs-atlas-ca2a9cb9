@@ -1,5 +1,5 @@
 ---
-title: "DNSSEC with DNS-over-HTTPS"
+title: "DNSSEC Support and Flag Handling in DNS-over-HTTPS"
 sidebarTitle: "DNSSEC"
 description: "DNS-over-HTTPS requests DNSSEC signatures by default and passes AD and CD flags through. Signature validation requires an external validating resolver."
 ---
@@ -68,7 +68,7 @@ if cdStr == "1" || strings.EqualFold(cdStr, "true") {
 msg.CheckingDisabled = cd
 ```
 
-- **IETF wire-format:** the DNS message is forwarded intact, so the CD bit is carried through naturally without any special handling.
+- **IETF wire-format:** the DNS message is forwarded intact, so the CD bit is carried through naturally without any special handling. Note that `doh-server`'s IETF handler adds a synthesised OPT record with `DO=false` when the incoming message lacks one, meaning DNSSEC signatures are not requested for bare IETF queries that arrive without an OPT record.
 
 ---
 
@@ -131,7 +131,7 @@ Queries through DNS-over-HTTPS will now be fully DNSSEC-validated by Unbound. Th
 
 BIND 9.11 and later validates DNSSEC automatically with a managed trust anchor. Configure it as a forwarding resolver listening on a non-standard port if you don't want it to replace your existing resolver:
 
-```
+```text
 options {
     listen-on port 5335 { 127.0.0.1; };
     recursion yes;

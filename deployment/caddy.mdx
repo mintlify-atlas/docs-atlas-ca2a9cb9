@@ -1,5 +1,5 @@
 ---
-title: "Deploy DNS-over-HTTPS Behind Caddy"
+title: "Caddy Reverse Proxy Configuration for DNS-over-HTTPS"
 sidebarTitle: "Caddy"
 description: "Use Caddy v2 as a zero-config TLS reverse proxy for doh-server. Caddy handles certificate provisioning and OCSP stapling automatically."
 ---
@@ -25,6 +25,7 @@ Create or edit your `/etc/caddy/Caddyfile` with the following block:
 my.server.name {
   reverse_proxy * localhost:8053
   tls your@email.address
+  try_files {path} {path}/index.php /index.php?{query}
 }
 ```
 

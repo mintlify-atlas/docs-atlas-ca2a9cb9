@@ -1,7 +1,7 @@
 ---
-title: "Mutual TLS Client Certificate Authentication"
+title: "Mutual TLS Client Authentication for doh-server Access"
 sidebarTitle: "TLS Client Auth"
-description: "Restrict access to your doh-server instance by requiring valid client TLS certificates signed by a specific CA. Configuration and certificate generation steps."
+description: "Restrict doh-server access by requiring client TLS certificates signed by a CA you control. Covers configuration and certificate generation steps."
 ---
 
 For private or controlled deployments, `doh-server` supports mutual TLS (mTLS) client authentication. When enabled, the server requires every connecting client to present a valid X.509 certificate signed by a trusted certificate authority (CA) that you control. Connections from clients that cannot present a valid certificate are refused at the TLS handshake layer, before any HTTP request is processed.
@@ -37,7 +37,7 @@ tls_client_auth_ca  = "root-ca-public.crt"
 
 Both options must be set together. If `tls_client_auth = true` is set without `tls_client_auth_ca`, the server will log a fatal error and exit:
 
-```
+```text
 TLS client authentication requires both tls_client_auth and tls_client_auth_ca, exiting.
 ```
 
@@ -165,5 +165,5 @@ httpClient := &http.Client{Transport: transport}
 </Warning>
 
 <Note>
-  Mutual TLS client certificate authentication was added in **version 2.2.5** of DNS-over-HTTPS. If you are running an older version, upgrade before attempting to use these configuration options.
+  Mutual TLS client certificate authentication requires that `doh-server` is serving TLS directly (i.e. `cert` and `key` are configured). If you are using a TLS-terminating reverse proxy in front of `doh-server`, mTLS client auth must be handled at the proxy layer instead.
 </Note>

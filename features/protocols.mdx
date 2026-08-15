@@ -1,7 +1,7 @@
 ---
-title: "Supported DNS-over-HTTPS Protocol Formats"
+title: "DNS-over-HTTPS Supported Protocol Formats Explained"
 sidebarTitle: "Protocols"
-description: "DNS-over-HTTPS supports both Google JSON DoH and IETF RFC 8484 wire-format. Learn how each protocol works and when to use each."
+description: "DNS-over-HTTPS supports both the Google JSON DoH and IETF RFC 8484 wire-format protocols. Learn how each works and when to use each."
 ---
 
 This project implements two distinct DNS-over-HTTPS protocols: the [Google DNS-over-HTTPS JSON protocol](https://developers.google.com/speed/public-dns/docs/dns-over-https) and the [IETF RFC 8484 wire-format protocol](https://www.rfc-editor.org/rfc/rfc8484.txt). Both protocols share the same endpoint (`/dns-query` by default), and `doh-server` auto-detects which format to use based on the request's `Content-Type` and `Accept` headers, while `doh-client` selects the protocol based on which upstream list the server is configured under.
@@ -14,7 +14,7 @@ The Google protocol encodes DNS queries and responses as JSON objects transmitte
 
 Queries are issued as `GET` requests with the following query parameters:
 
-```
+```text
 GET /dns-query?name=<name>&type=<type>&ct=application/dns-json
 ```
 
@@ -27,7 +27,7 @@ GET /dns-query?name=<name>&type=<type>&ct=application/dns-json
 | `do`                  | No       | Set to `1` to request DNSSEC signatures (DNSSEC OK flag).                   |
 | `edns_client_subnet`  | No       | Client subnet hint in CIDR notation, e.g. `203.0.113.0/24` or `0/0` to suppress ECS. |
 
-The request `Accept` header should include `application/json`:
+The request `Accept` header sent by `doh-client` for Google protocol requests is:
 
 ```http
 Accept: application/json, application/dns-message, application/dns-udpwireformat
@@ -96,9 +96,9 @@ The IETF protocol (RFC 8484) transmits standard DNS wire-format messages over HT
 
 ### GET Request
 
-When the encoded query URL is shorter than 2,048 characters, `doh-client` uses a GET request with the DNS message Base64URL-encoded in the `dns` query parameter:
+When the encoded query URL is shorter than 2,048 characters, `doh-client` uses a GET request with the DNS message Base64URL-encoded in the `dns` query parameter. The `Accept` header is set to prefer `application/dns-message`:
 
-```
+```text
 GET /dns-query?ct=application/dns-message&dns=<base64url-encoded DNS message>
 ```
 
@@ -111,6 +111,7 @@ if len(requestURL) < 2048 {
     req, err = http.NewRequest(http.MethodPost, upstream.URL, bytes.NewReader(requestBinary))
     req.Header.Set("Content-Type", "application/dns-message")
 }
+req.Header.Set("Accept", "application/dns-message, application/dns-udpwireformat, application/json")
 ```
 
 ### POST Request

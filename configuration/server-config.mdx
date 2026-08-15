@@ -82,7 +82,7 @@ log_guessed_client_ip = false
 # Set to true to allow local (e.g. RFC1918) addresses to be forwarded via ECS.
 ecs_allow_non_global_ip = false
 
-# Forward the full client IP in ECS instead of masking to /24 (IPv4) or /128 (IPv6).
+# Forward the full client IP in ECS instead of masking to /24 (IPv4) or /56 (IPv6).
 # Only recommended for private/controlled network environments.
 ecs_use_precise_ip = false
 
@@ -243,7 +243,7 @@ ecs_allow_non_global_ip = false
 
 ### `ecs_use_precise_ip`
 
-By default, only a masked portion of the client IP is forwarded in ECS (`/24` for IPv4, `/128` for IPv6). When `true`, the **full** client IP address is forwarded without masking.
+By default, only a masked portion of the client IP is forwarded in ECS (`/24` for IPv4, `/56` for IPv6). When `true`, the **full** client IP address is forwarded without masking (effectively `/32` for IPv4 and `/128` for IPv6).
 
 Only enable this in private, controlled environments where individual endpoint identification is required (e.g. DNS firewalling). Do **not** enable on public-facing servers, as it exposes full user IP addresses to upstream resolvers.
 
